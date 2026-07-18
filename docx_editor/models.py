@@ -103,6 +103,7 @@ class ChapterNode:
     number_tuple: Optional[Tuple[int, ...]]       # e.g. (3, 1, 1) or None
     heading_paragraph_index: int                  # Index into document.paragraphs
     body_paragraph_indices: List[int] = field(default_factory=list)
+    body_table_indices: List[int] = field(default_factory=list)
     children: List['ChapterNode'] = field(default_factory=list)
     parent: Optional['ChapterNode'] = None
     heading_style_id: Optional[str] = None
@@ -131,6 +132,7 @@ class CommentData:
     date: str
     text: str
     paragraph_index: Optional[int] = None
+    parent_id: Optional[str] = None      # w:parent – IDs of the parent comment if this is a reply
 
 
 @dataclass

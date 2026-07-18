@@ -1,0 +1,3 @@
+interface:
+  display_name: "DOCX Editor (批注/格式/创建)"
+  short_description: "创建、修改和分析 DOCX 文档，支持批注审核、格式一致性检查和通篇改格式。"

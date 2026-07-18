@@ -194,3 +194,100 @@ class TestDocxDocumentEdgeCases:
         ch = docx2.get_chapter("1.1")
         # Content should reflect the replacement
         assert ch is not None
+
+
+class TestInsertToc:
+    """Tests for DocxDocument.insert_toc()."""
+
+    def test_insert_toc_at_beginning(self, doc_with_headings_path):
+        """Static TOC inserted at the beginning."""
+        docx = DocxDocument(doc_with_headings_path)
+        docx.insert_toc(position=None, max_level=3)
+
+        # After insertion, first paragraph should be the TOC title
+        first_para = docx.format_store.document.paragraphs[0]
+        assert '目录' in first_para.text
+
+        # TOC entries should exist for all headings
+        all_text = ' '.join(
+            p.text for p in docx.format_store.document.paragraphs
+        )
+        assert '第一章 引言' in all_text
+        assert '1.1 背景' in all_text
+        assert '第二章 方法' in all_text
+
+    def test_insert_toc_before_chapter(self, doc_with_headings_path):
+        """TOC inserted before a specific chapter."""
+        docx = DocxDocument(doc_with_headings_path)
+        docx.insert_toc(position='2', max_level=2)
+
+        # The TOC should be before chapter 2's heading
+        paragraphs = docx.format_store.document.paragraphs
+        toc_texts = [p.text for p in paragraphs]
+
+        # Find where "目录" and "第二章" appear
+        toc_idx = next(i for i, t in enumerate(toc_texts) if '目录' in t)
+        ch2_idx = next(i for i, t in enumerate(toc_texts) if '第二章' in t)
+        assert toc_idx < ch2_idx
+
+    def test_insert_toc_max_level_1(self, doc_with_headings_path):
+        """Only level-1 headings appear in TOC with max_level=1."""
+        docx = DocxDocument(doc_with_headings_path)
+        docx.insert_toc(position=None, max_level=1)
+
+        paragraphs = docx.format_store.document.paragraphs
+
+        # TOC entries are between "目录" and the first original heading ("第一章 引言")
+        # Find their positions
+        texts = [p.text for p in paragraphs]
+        toc_title_idx = next(i for i, t in enumerate(texts) if '目录' in t)
+        # The TOC entries start after the blank paragraph following "目录"
+        toc_start = toc_title_idx + 2  # title + blank
+        # The original content starts at "第一章 引言" (second occurrence)
+        first_heading_idx = texts.index('第一章 引言', toc_start)
+
+        toc_entries = texts[toc_start:first_heading_idx]
+        assert len(toc_entries) == 2  # 2 level-1 headings
+        assert any('第一章' in t for t in toc_entries)
+        assert any('第二章' in t for t in toc_entries)
+        assert not any('1.1' in t for t in toc_entries)
+
+    def test_insert_toc_twice(self, doc_with_headings_path):
+        """Inserting TOC twice should create entries both times."""
+        docx = DocxDocument(doc_with_headings_path)
+        docx.insert_toc(position=None, max_level=1)
+        docx.insert_toc(position='2', max_level=1)
+
+        paragraphs = docx.format_store.document.paragraphs
+        toc_texts = [p.text for p in paragraphs]
+        assert toc_texts.count('目录') == 2
+
+    def test_insert_toc_word_field(self, doc_with_headings_path):
+        """Word TOC field can be inserted without error."""
+        docx = DocxDocument(doc_with_headings_path)
+        docx.insert_toc(position=None, use_word_field=True)
+
+        paragraphs = docx.format_store.document.paragraphs
+        # Should have TOC heading + field paragraph
+        assert '目录' in paragraphs[0].text
+
+    def test_insert_toc_empty_document(self):
+        """TOC on empty document should not crash."""
+        doc = Document()
+        tmp = tempfile.NamedTemporaryFile(suffix='.docx', delete=False)
+        tmp.close()
+        doc.save(tmp.name)
+        try:
+            docx = DocxDocument(tmp.name)
+            docx.insert_toc(position=None)
+            # Should have at least the TOC title
+            paragraphs = docx.format_store.document.paragraphs
+            assert len(paragraphs) >= 1
+        finally:
+            os.unlink(tmp.name)
+
+    def test_insert_toc_before_nonexistent_chapter(self, doc_with_headings_path):
+        """Inserting TOC before a nonexistent chapter raises error."""
+        docx = DocxDocument(doc_with_headings_path)
+        with pytest.raises(ChapterNotFoundError):
+            docx.insert_toc(position='9.9')

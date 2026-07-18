@@ -444,6 +444,7 @@ class MarkdownProcessor:
         elements: List[MarkdownElement],
         body_template: Optional[ParagraphData] = None,
         heading_template: Optional[ParagraphData] = None,
+        table_template: Optional[ParagraphData] = None,
     ) -> List:
         """Convert parsed markdown elements into docx paragraphs/tables/images.
 
@@ -462,7 +463,9 @@ class MarkdownProcessor:
         created = []
 
         for element in elements:
-            created_elements = self._convert_element(element, body_template, heading_template)
+            created_elements = self._convert_element(
+                element, body_template, heading_template, table_template,
+            )
             if created_elements:
                 if isinstance(created_elements, list):
                     created.extend(created_elements)
@@ -476,6 +479,7 @@ class MarkdownProcessor:
         element: MarkdownElement,
         body_template: Optional[ParagraphData] = None,
         heading_template: Optional[ParagraphData] = None,
+        table_template: Optional[ParagraphData] = None,
     ):
         """Convert a single MarkdownElement to docx element(s).
 
@@ -491,7 +495,7 @@ class MarkdownProcessor:
             return self._add_paragraph(element.text, body_template)
 
         elif element.type == MarkdownElementType.TABLE:
-            return self._build_table(element)
+            return self._build_table(element, table_template or body_template)
 
         elif element.type == MarkdownElementType.IMAGE:
             return self._add_image(element)
@@ -529,8 +533,16 @@ class MarkdownProcessor:
         level = min(max(level, 1), 9)
         para = self.document.add_heading(text, level=level)
         if template and template.formatting:
-            self._apply_paragraph_format(para, template.formatting)
+            run_fmt = self._extract_run_fmt(template)
+            self._apply_paragraph_format(para, template.formatting, run_fmt)
         return para
+
+    @staticmethod
+    def _extract_run_fmt(template: Optional[ParagraphData]) -> Optional['FormattingData']:
+        """Extract the first run's FormattingData from a ParagraphData template."""
+        if template and template.runs_data:
+            return template.runs_data[0][1]
+        return None
 
     def _add_paragraph(
         self,
@@ -542,17 +554,31 @@ class MarkdownProcessor:
             para = self.document.add_paragraph()
             return para
 
+        run_fmt = self._extract_run_fmt(template)
+
         # Parse inline formatting
         segments = self.parse_inline_formatting(text)
 
         para = self.document.add_paragraph()
 
         if template and template.formatting:
-            self._apply_paragraph_format(para, template.formatting)
+            self._apply_paragraph_format(para, template.formatting, run_fmt)
 
         for seg_text, fmt_overrides in segments:
             run = para.add_run(seg_text)
             self._apply_inline_format(run, fmt_overrides)
+
+        # Apply template font to runs (runs didn't exist when
+        # _apply_paragraph_format was called with run_fmt above).
+        if run_fmt:
+            from docx.shared import Pt
+            for run in para.runs:
+                if run_fmt.font_name and not run.font.name:
+                    run.font.name = run_fmt.font_name
+                if run_fmt.font_name_east_asia:
+                    self._set_run_font_east_asia(run, run_fmt.font_name_east_asia)
+                if run_fmt.size and run.font.size is None:
+                    run.font.size = Pt(run_fmt.size / 2)
 
         return para
 
@@ -587,6 +613,7 @@ class MarkdownProcessor:
             run.font.name = 'Courier New'
             run.font.size = Pt(9)
             if template and template.formatting:
+                # Code blocks use monospace — don't apply body font, only spacing
                 self._apply_paragraph_format(para, template.formatting)
             created.append(para)
         return created
@@ -621,20 +648,36 @@ class MarkdownProcessor:
         pPr.append(bord)
         return para
 
-    def _build_table(self, element: MarkdownElement):
-        """Build a table from a Table MarkdownElement."""
+    def _build_table(self, element: MarkdownElement,
+                     body_template: Optional[ParagraphData] = None):
+        """Build a table from a Table MarkdownElement, applying template font."""
         from .table_builder import TableBuilder
         builder = TableBuilder(self.document)
         return builder.build_table(
             headers=[c.text for c in element.children] if element.children else None,
             rows=element.rows or [],
             merge_map=element.merge_map,
+            body_template=body_template,
         )
 
     # ======================== Formatting Helpers ========================
 
-    def _apply_paragraph_format(self, para, fmt: ParagraphFormatData):
-        """Apply ParagraphFormatData to a docx paragraph."""
+    def _apply_paragraph_format(self, para, fmt: ParagraphFormatData,
+                                 run_fmt: Optional['FormattingData'] = None):
+        """Apply ParagraphFormatData to a docx paragraph, including fonts.
+
+        Args:
+            para: python-docx Paragraph to format
+            fmt: ParagraphFormatData (alignment, indentation, spacing, etc.)
+            run_fmt: Optional FormattingData for run-level font info
+                     (font name, east-asian font, size).  The ``_add_paragraph``
+                     caller retrieves this from template.runs_data.
+        """
+        from docx.shared import Emu, Pt as PtShared
+        from docx.enum.text import WD_LINE_SPACING, WD_ALIGN_PARAGRAPH
+        from docx.oxml import OxmlElement
+        from docx.oxml.ns import qn
+
         pf = para.paragraph_format
 
         if fmt.alignment:
@@ -648,20 +691,71 @@ class MarkdownProcessor:
             pf.alignment = align_map.get(fmt.alignment.lower())
 
         if fmt.first_line_indent:
-            from docx.shared import Emu
-            pf.first_line_indent = Emu(fmt.first_line_indent)
+            # fmt.first_line_indent is in twips (1/20 pt).
+            # python-docx expects EMU: 1 twip = 635 EMU.
+            pf.first_line_indent = Emu(fmt.first_line_indent * 635)
 
         if fmt.left_indent:
-            from docx.shared import Emu
-            pf.left_indent = Emu(fmt.left_indent)
+            pf.left_indent = Emu(fmt.left_indent * 635)
 
-        if fmt.space_before:
-            from docx.shared import Pt as PtShared
-            pf.space_before = PtShared(fmt.space_before / 20)  # twips to pt
+        if fmt.space_before is not None:
+            # Write via OOXML directly so even 0 values are preserved
+            from docx.oxml import OxmlElement
+            ppr = para._element.get_or_add_pPr()
+            spacing = ppr.find(qn('w:spacing'))
+            if spacing is None:
+                spacing = OxmlElement('w:spacing')
+                ppr.append(spacing)
+            spacing.set(qn('w:before'), str(int(fmt.space_before)))
 
-        if fmt.space_after:
-            from docx.shared import Pt as PtShared
-            pf.space_after = PtShared(fmt.space_after / 20)
+        if fmt.space_after is not None:
+            from docx.oxml import OxmlElement
+            ppr = para._element.get_or_add_pPr()
+            spacing = ppr.find(qn('w:spacing'))
+            if spacing is None:
+                spacing = OxmlElement('w:spacing')
+                ppr.append(spacing)
+            spacing.set(qn('w:after'), str(int(fmt.space_after)))
+
+        if fmt.line_spacing is not None:
+            # Write line spacing directly via OOXML to preserve exact values.
+            # python-docx's Python-level API converts values in ways that can
+            # corrupt the OOXML representation (e.g. 300 → 72000 EMU).
+            from docx.oxml import OxmlElement
+            ppr = para._element.get_or_add_pPr()
+            spacing_el = ppr.find(qn('w:spacing'))
+            if spacing_el is None:
+                spacing_el = OxmlElement('w:spacing')
+                ppr.append(spacing_el)
+            spacing_el.set(qn('w:line'), str(int(fmt.line_spacing)))
+            rule_str = (fmt.line_spacing_rule or 'auto').lower()
+            spacing_el.set(qn('w:lineRule'), rule_str)
+
+        # ── Apply run-level font formatting to all existing runs ──
+        if run_fmt:
+            for run in para.runs:
+                if run_fmt.font_name and not run.font.name:
+                    run.font.name = run_fmt.font_name
+                if run_fmt.font_name_east_asia:
+                    self._set_run_font_east_asia(run, run_fmt.font_name_east_asia)
+                if run_fmt.size and run.font.size is None:
+                    run.font.size = PtShared(run_fmt.size / 2)  # half-pts → pts
+                if run_fmt.bold is not None and run.font.bold is None:
+                    run.font.bold = run_fmt.bold
+                if run_fmt.italic is not None and run.font.italic is None:
+                    run.font.italic = run_fmt.italic
+
+    @staticmethod
+    def _set_run_font_east_asia(run, font_name: str):
+        """Set the East-Asian font name on a run (w:rFonts w:eastAsia)."""
+        from docx.oxml import OxmlElement
+        from docx.oxml.ns import qn
+        rPr = run._element.get_or_add_rPr()
+        rFonts = rPr.find(qn('w:rFonts'))
+        if rFonts is None:
+            rFonts = OxmlElement('w:rFonts')
+            rPr.insert(0, rFonts)
+        rFonts.set(qn('w:eastAsia'), font_name)
 
     def _apply_inline_format(self, run, fmt_overrides: dict):
         """Apply inline format overrides to a docx run."""
@@ -682,6 +776,7 @@ class MarkdownProcessor:
         elements: List[MarkdownElement],
         body_template: Optional[ParagraphData] = None,
         heading_template: Optional[ParagraphData] = None,
+        table_template: Optional[ParagraphData] = None,
     ) -> list:
         """Build new docx paragraph/table elements ready for insertion.
 
@@ -693,7 +788,9 @@ class MarkdownProcessor:
         Returns list of lxml elements that can be inserted into the document body.
         """
         # Apply to document (they get added to the end)
-        created = self.apply_to_document(elements, body_template, heading_template)
+        created = self.apply_to_document(
+            elements, body_template, heading_template, table_template,
+        )
 
         # Extract the XML elements and remove from document
         result = []

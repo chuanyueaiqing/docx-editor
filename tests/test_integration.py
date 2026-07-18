@@ -343,3 +343,59 @@ class TestIntegrationWithOriginalDocx:
         doc = DocxDocument(original_docx)
         comments = doc.read_comments()
         assert isinstance(comments, list)
+
+
+class TestIntegrationToc:
+    """End-to-end TOC integration tests."""
+
+    def test_toc_then_save_and_reload(self, complex_docx):
+        """Insert TOC, save, reload — chapter structure preserved."""
+        doc = DocxDocument(complex_docx)
+        doc.insert_toc(position=None, max_level=3)
+
+        # Save
+        output = tempfile.NamedTemporaryFile(suffix='.docx', delete=False)
+        output.close()
+        try:
+            doc.save(output.name)
+
+            # Reload
+            doc2 = DocxDocument(output.name)
+            # Chapter structure should still be intact
+            assert doc2.get_chapter("1") is not None
+            assert doc2.get_chapter("2.1.2") is not None
+            assert len(doc2.get_chapter_tree()) > 0
+        finally:
+            os.unlink(output.name)
+
+    def test_toc_with_then_replace_chapter(self, complex_docx):
+        """Insert TOC, then replace a chapter — no conflict."""
+        doc = DocxDocument(complex_docx)
+        doc.insert_toc(position=None, max_level=2)
+        doc.replace_chapter("2.1", "# 新架构\n\n新内容")
+
+        ch = doc.get_chapter("2.1")
+        assert ch is not None
+
+    def test_toc_with_then_delete_chapter(self, complex_docx):
+        """Insert TOC, then delete a chapter — no crash."""
+        doc = DocxDocument(complex_docx)
+        doc.insert_toc(position=None, max_level=2)
+        doc.delete_chapter("1.2.1")
+
+        ch = doc.get_chapter("1.2")
+        assert ch is not None
+
+    def test_toc_word_field_then_save(self, complex_docx):
+        """Word TOC field insertion then save/reload."""
+        doc = DocxDocument(complex_docx)
+        doc.insert_toc(position=None, use_word_field=True)
+
+        output = tempfile.NamedTemporaryFile(suffix='.docx', delete=False)
+        output.close()
+        try:
+            doc.save(output.name)
+            doc2 = DocxDocument(output.name)
+            assert doc2.get_chapter("1") is not None
+        finally:
+            os.unlink(output.name)

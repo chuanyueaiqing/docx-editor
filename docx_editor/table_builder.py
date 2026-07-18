@@ -5,7 +5,10 @@ Supports custom merge markers:
   - '>' in a cell = horizontal merge (merge with cell to the left)
   - 'v' in a cell = vertical merge (merge with cell above)
 """
-from typing import Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+
+if TYPE_CHECKING:
+    from .models import ParagraphData
 
 from docx import Document
 from docx.shared import Pt, Emu, RGBColor
@@ -38,6 +41,7 @@ class TableBuilder:
         headers: Optional[List[str]] = None,
         rows: Optional[List[List[str]]] = None,
         merge_map: Optional[List[List[str]]] = None,
+        body_template: Optional['ParagraphData'] = None,
     ) -> Any:
         """Build a docx table with optional merged cells.
 
@@ -48,6 +52,8 @@ class TableBuilder:
                        '>' = merge with cell to the left (horizontal).
                        'v' = merge with cell above (vertical).
                        '' or None = no merge.
+            body_template: Optional ParagraphData to apply font formatting
+                           to table cell content.
 
         Returns:
             python-docx Table object
@@ -94,6 +100,22 @@ class TableBuilder:
         # Apply merges from merge_map
         if merge_map:
             self._apply_merges(table, merge_map, headers is not None)
+
+        # Apply template font formatting to all cells
+        if body_template and body_template.runs_data:
+            rf = body_template.runs_data[0][1]  # FormattingData from first run
+            from docx.shared import Pt
+            for row in table.rows:
+                for cell in row.cells:
+                    for para in cell.paragraphs:
+                        for run in para.runs:
+                            if rf:
+                                if getattr(rf, 'font_name', None) and not run.font.name:
+                                    run.font.name = rf.font_name
+                                if getattr(rf, 'font_name_east_asia', None):
+                                    self._set_run_font_east_asia(run, rf.font_name_east_asia)
+                                if getattr(rf, 'size', None) and run.font.size is None:
+                                    run.font.size = Pt(rf.size / 2)
 
         return table
 
@@ -159,6 +181,18 @@ class TableBuilder:
             for run in paragraph.runs:
                 if is_header:
                     run.bold = True
+
+    @staticmethod
+    def _set_run_font_east_asia(run, font_name: str):
+        """Set the East-Asian font name on a run (w:rFonts w:eastAsia)."""
+        from docx.oxml import OxmlElement
+        from docx.oxml.ns import qn
+        rPr = run._element.get_or_add_rPr()
+        rFonts = rPr.find(qn('w:rFonts'))
+        if rFonts is None:
+            rFonts = OxmlElement('w:rFonts')
+            rPr.insert(0, rFonts)
+        rFonts.set(qn('w:eastAsia'), font_name)
 
     @staticmethod
     def _set_cell_shading(cell, color: str):

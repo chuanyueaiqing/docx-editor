@@ -190,6 +190,50 @@ class TestChapterTreeEdgeCases:
         assert "2.1.2" in output
 
 
+class TestGenerateTocEntries:
+    """Tests for ChapterParser.generate_toc_entries()."""
+
+    def test_all_entries_default(self, parser):
+        entries = parser.generate_toc_entries()
+        assert len(entries) == 8  # 8 headings total
+        assert entries[0] == ('1', '第一章 引言', 1)
+        assert entries[1] == ('1.1', '1.1 项目背景', 2)
+        assert entries[-1] == ('2.1.2', '2.1.2 后端架构', 3)
+
+    def test_max_level_filter(self, parser):
+        entries = parser.generate_toc_entries(max_level=2)
+        assert all(level <= 2 for _, _, level in entries)
+        # Level 3 entries (1.2.1, 2.1.1, 2.1.2) should be filtered out
+        assert len(entries) == 5
+
+    def test_max_level_1(self, parser):
+        entries = parser.generate_toc_entries(max_level=1)
+        assert all(level == 1 for _, _, level in entries)
+        assert len(entries) == 2
+        assert entries[0] == ('1', '第一章 引言', 1)
+        assert entries[1] == ('2', '第二章 系统架构', 1)
+
+    def test_entry_structure(self, parser):
+        entries = parser.generate_toc_entries()
+        for num_str, heading_text, level in entries:
+            assert isinstance(num_str, str)
+            assert isinstance(heading_text, str) and len(heading_text) > 0
+            assert isinstance(level, int) and 1 <= level <= 3
+
+    def test_empty_document(self):
+        doc = Document()
+        store = FormatStore(docx_path="test.docx", document=doc)
+        store.formats_json = FormatExtractor.extract_all(doc)
+        p = ChapterParser(store)
+        entries = p.generate_toc_entries()
+        assert entries == []
+
+    def test_order_preserved(self, parser):
+        entries = parser.generate_toc_entries()
+        numbers = [e[0] for e in entries]
+        assert numbers == ['1', '1.1', '1.2', '1.2.1', '2', '2.1', '2.1.1', '2.1.2']
+
+
 @pytest.fixture
 def parser_with_deep(doc_with_headings):
     """Create chapter parser with deep heading structure."""

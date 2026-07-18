@@ -19,14 +19,8 @@ class ChapterParser:
         contents = parser.get_chapter_contents(chapter)
     """
 
-    # Heading style patterns for detection
-    HEADING_PATTERNS = [
-        re.compile(r'^第[一二三四五六七八九十百零〇]+[章节篇部]'),  # 第一章, 第一节
-        re.compile(r'^第\d+[章节篇部]'),                           # 第1章
-        re.compile(r'^\d+(\.\d+)*[\s\.、]'),                      # 1, 1.1, 1.1.1
-        re.compile(r'^[A-Z]\.\s'),                                 # A. Introduction
-        re.compile(r'^[0-9]+\.\s+'),                               # 1. Introduction
-    ]
+    # Heading style patterns for detection (DEPRECATED — see Method 4 note)
+    HEADING_PATTERNS: list = []
 
     CHINESE_NUM_MAP = {
         '零': 0, '一': 1, '二': 2, '三': 3, '四': 4,
@@ -43,9 +37,33 @@ class ChapterParser:
         '条': 3,
     }
 
-    def __init__(self, format_store: FormatStore):
+    def __init__(
+        self,
+        format_store: FormatStore,
+        detect_manual_headings: bool = False,
+        heading_format_config: Optional[dict] = None,
+    ):
+        """Initialize chapter parser.
+
+        Args:
+            format_store: The format store with document data.
+            detect_manual_headings: If True, also detect headings via formatting
+                signals (bold + large font + spacing) when no heading style or
+                outline level is present.  Default False — only use style+outline.
+            heading_format_config: Thresholds for manual heading detection:
+                {
+                    'min_bold': True,           # require bold
+                    'min_size': 28,             # min font size in half-points (14pt)
+                    'min_space_before': 100,    # min space-before in twips (5pt)
+                    'level1_size': 44,          # 22pt+ → level 1
+                    'level2_size': 32,          # 16pt+ → level 2
+                    'level3_size': 28,          # 14pt+ → level 3
+                }
+        """
         self.store = format_store
         self.document = format_store.document
+        self.detect_manual_headings = detect_manual_headings
+        self.heading_format_config = heading_format_config or {}
         self.root_chapters: List[ChapterNode] = []
         self._chapter_map: Dict[str, ChapterNode] = {}   # "3.1.1" -> node
         self._paragraph_to_chapter: Dict[int, ChapterNode] = {}
@@ -56,14 +74,31 @@ class ChapterParser:
 
     def _populate_paragraphs_data(self):
         """Build ParagraphData list from document paragraphs and format store."""
+        from .models import FormattingData
         self.store.paragraphs_data = []
         for i, para in enumerate(self.document.paragraphs):
             fmt_data = self.store.formats_json.get(i, {})
+
+            # Build runs_data from formats_json['runs'] (list of dicts)
+            runs_data: List[Tuple[str, FormattingData]] = []
+            for run_dict in fmt_data.get('runs', []):
+                text = run_dict.get('text', '')
+                fmt = run_dict.get('formatting')
+                if fmt is not None and not isinstance(fmt, FormattingData):
+                    # Convert dict → FormattingData if needed
+                    try:
+                        fmt = FormattingData(**fmt)
+                    except (TypeError, ValueError):
+                        fmt = FormattingData()
+                fmt = fmt or FormattingData()
+                runs_data.append((text, fmt))
+
             pd = ParagraphData(
                 paragraph=para,
                 index=i,
                 text=para.text,
                 formatting=fmt_data.get('paragraph_format'),
+                runs_data=runs_data,
             )
             self.store.paragraphs_data.append(pd)
 
@@ -120,6 +155,9 @@ class ChapterParser:
         # Assign body paragraphs to chapters
         self._assign_body_paragraphs(headings)
 
+        # Assign tables to chapters
+        self._assign_tables_to_chapters()
+
     def _collect_headings(self) -> List[Tuple[int, int, str, Optional[Tuple[int, ...]]]]:
         """Collect all heading paragraphs from the document.
 
@@ -171,6 +209,14 @@ class ChapterParser:
                         pass
                     return 1  # Default heading level
 
+        # Skip TOC / Table of Contents entries — they look like headings via
+        # outlineLvl in their XML, but are NOT real content headings.
+        if style is not None:
+            style_name_lower = (style.name or '').lower()
+            style_id_lower = (style.style_id or '').lower()
+            if style_name_lower.startswith('toc') or style_id_lower.startswith('toc'):
+                return None
+
         # Method 2: Check format store for outline level
         fmt_data = self.store.formats_json.get(index, {})
         pf = fmt_data.get('paragraph_format')
@@ -189,19 +235,39 @@ class ChapterParser:
                 if val:
                     return int(val) + 1
 
-        # Method 4: Check if text matches heading patterns
-        text = para.text.strip()
-        for pattern in self.HEADING_PATTERNS:
-            if pattern.match(text):
-                # Map Chinese heading units (章/节/篇/部) to levels
-                first_word = text.split()[0] if text.split() else ''
-                unit_match = re.search(r'[章节篇部]$', first_word)
-                if unit_match:
-                    level = self.CHINESE_HEADING_UNIT_LEVEL.get(unit_match.group(), 1)
-                    return min(level, 9)
-                # Determine level from dotted structure
-                dots = first_word.count('.')
-                return min(dots + 1, 9)
+        # Method 4: Detect manually-formatted headings via formatting signals
+        # (bold + large font + spacing).  Only active when the user has opted in
+        # via detect_manual_headings=True — disabled by default.
+        if not self.detect_manual_headings:
+            return None
+
+        cfg = self.heading_format_config
+        runs = fmt_data.get('runs', [])
+        if runs and isinstance(runs[0], dict):
+            run_fmt = runs[0].get('formatting')
+            if run_fmt:
+                is_bold = bool(getattr(run_fmt, 'bold', None))
+                size = getattr(run_fmt, 'size', None) or 0    # half-points
+
+                space_before = 0
+                if pf:
+                    space_before = pf.space_before or 0
+
+                # Configurable thresholds
+                need_bold = cfg.get('min_bold', True)
+                min_size = cfg.get('min_size', 28)       # 14pt default
+                min_space = cfg.get('min_space_before', 100)  # 5pt default
+                l1 = cfg.get('level1_size', 44)          # 22pt
+                l2 = cfg.get('level2_size', 32)          # 16pt
+                l3 = cfg.get('level3_size', 28)          # 14pt
+
+                if (not need_bold or is_bold) and size >= min_size and space_before >= min_space:
+                    if size >= l1:
+                        return 1
+                    elif size >= l2:
+                        return 2
+                    elif size >= l3:
+                        return 3
 
         return None
 
@@ -333,6 +399,35 @@ class ChapterParser:
                     chapter.body_paragraph_indices.append(body_idx)
                     self._paragraph_to_chapter[body_idx] = chapter
 
+    def _assign_tables_to_chapters(self):
+        """Map tables to chapters based on their position in the XML body.
+
+        In python-docx, ``document.paragraphs`` and ``document.tables`` are
+        two separate flat lists, but they interleave as siblings in the OOXML
+        body (``<w:p>`` and ``<w:tbl>``).  This method walks the body children
+        in document order, finds which paragraph index each table sits between,
+        and assigns it to the corresponding chapter's ``body_table_indices``.
+        """
+        body = self.document.element.body
+        para_counter = 0
+        table_counter = 0
+        last_chapter: Optional[ChapterNode] = None
+
+        for child in body:
+            tag = child.tag
+            if tag == qn('w:p'):
+                ch = self._paragraph_to_chapter.get(para_counter)
+                if ch is not None:
+                    last_chapter = ch
+                para_counter += 1
+            elif tag == qn('w:tbl'):
+                if last_chapter is not None:
+                    last_chapter.body_table_indices.append(table_counter)
+                elif self.root_chapters:
+                    # Table before any mapped paragraph → assign to first chapter
+                    self.root_chapters[0].body_table_indices.append(table_counter)
+                table_counter += 1
+
     def _iter_all_nodes(self) -> List[ChapterNode]:
         """Iterate all nodes in the tree (depth-first)."""
         result = []
@@ -395,17 +490,326 @@ class ChapterParser:
 
         return contents
 
+    @staticmethod
+    def _collect_table_indices(node: ChapterNode) -> set:
+        """Recursively collect table indices from a node and all descendants."""
+        indices = set(node.body_table_indices)
+        for child in node.children:
+            indices.update(ChapterParser._collect_table_indices(child))
+        return indices
+
     def get_chapter_text(self, chapter: ChapterNode) -> str:
-        """Get concatenated text of a chapter (heading + body).
+        """Get concatenated text of a chapter (heading + body + tables + image markers).
+
+        Tables are rendered in their correct interleaved position relative
+        to paragraphs.  Images appear as ``[图片: embed.ext]`` markers.
 
         Args:
             chapter: The chapter node
 
         Returns:
-            Combined text of all paragraphs in the chapter
+            Combined text of all paragraphs, tables, and image markers
         """
-        paragraphs = self.get_chapter_contents(chapter)
-        return '\n'.join(p.text for p in paragraphs if p.text)
+        all_table_indices = self._collect_table_indices(chapter)
+
+        if all_table_indices:
+            return self._get_text_with_tables(chapter, all_table_indices)
+
+        # ── Simple path: no tables, just paragraphs + images ──
+        parts: List[str] = []
+        for pd in self.get_chapter_contents(chapter):
+            if pd.text:
+                parts.append(pd.text)
+            markers = self._get_image_markers(pd.paragraph)
+            parts.extend(markers)
+        return '\n'.join(parts)
+
+    def _get_text_with_tables(self, chapter: ChapterNode,
+                              all_table_indices: set) -> str:
+        """Render chapter text with tables interleaved at correct positions."""
+        body = self.document.element.body
+        end_para = self._find_chapter_end(chapter)
+
+        # Pre-render tables
+        table_texts: Dict[int, str] = {}
+        for ti in all_table_indices:
+            if ti < len(self.document.tables):
+                table_texts[ti] = self._format_table(self.document.tables[ti])
+
+        # Walk body children, collecting paragraphs and tables in order
+        parts: List[str] = []
+        para_counter = 0
+        table_counter = 0
+        started = False
+
+        for child in body:
+            tag = child.tag
+            if tag == qn('w:p'):
+                if para_counter == chapter.heading_paragraph_index:
+                    started = True
+                if para_counter == end_para:
+                    break
+                if started and para_counter < len(self.store.paragraphs_data):
+                    pd = self.store.paragraphs_data[para_counter]
+                    if pd.text:
+                        parts.append(pd.text)
+                    markers = self._get_image_markers(pd.paragraph)
+                    parts.extend(markers)
+                para_counter += 1
+            elif tag == qn('w:tbl'):
+                if started and table_counter in table_texts:
+                    parts.append(table_texts[table_counter])
+                table_counter += 1
+
+        return '\n'.join(parts)
+
+    def _find_chapter_end(self, chapter: ChapterNode) -> int:
+        """Find the body-paragraph index where this chapter's content ends.
+
+        The end is the paragraph index of the next heading at the same or
+        higher (numerically smaller) level, or the end of the document.
+        """
+        end = len(self.document.paragraphs)
+        for node in self._iter_all_nodes():
+            if (node.heading_paragraph_index > chapter.heading_paragraph_index
+                    and node.heading_level <= chapter.heading_level):
+                end = node.heading_paragraph_index
+                break
+        return end
+
+    @staticmethod
+    def _format_table(table) -> str:
+        """Render a python-docx Table as readable text.
+
+        Returns a pipe-delimited multi-line string similar to Markdown.
+        Empty rows at the end are trimmed.
+        """
+        rows = []
+        ncols = 0
+        for row in table.rows:
+            cells = [cell.text.strip().replace('\n', ' ') for cell in row.cells]
+            ncols = max(ncols, len(cells))
+            if any(c for c in cells):
+                rows.append(cells)
+
+        if not rows:
+            return ''
+
+        # Determine column widths
+        col_widths = [0] * ncols
+        for row in rows:
+            for i, cell in enumerate(row):
+                col_widths[i] = max(col_widths[i], len(cell))
+
+        lines = []
+        for ri, row in enumerate(rows):
+            # Pad row to ncols
+            padded = list(row) + [''] * (ncols - len(row))
+            line = ' | '.join(cell.ljust(col_widths[i])
+                              for i, cell in enumerate(padded))
+            lines.append(line)
+            if ri == 0:
+                # Separator row
+                sep = '-|-'.join('-' * col_widths[i] for i in range(ncols))
+                lines.append(sep)
+
+        return '\n'.join(lines)
+
+    # ---- Image Detection & Extraction ----
+
+    # OOXML namespaces for drawing/blip detection
+    _BLIP_NS = 'http://schemas.openxmlformats.org/drawingml/2006/main'
+    _REL_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
+
+    _IMAGE_EXT_MAP = {
+        'image/png': '.png',
+        'image/jpeg': '.jpg',
+        'image/gif': '.gif',
+        'image/bmp': '.bmp',
+        'image/svg+xml': '.svg',
+        'image/tiff': '.tiff',
+        'image/x-emf': '.emf',
+        'image/x-wmf': '.wmf',
+    }
+
+    @classmethod
+    def _get_image_markers(cls, para) -> List[str]:
+        """Detect embedded images in a paragraph and return marker strings.
+
+        Returns list like ``["[图片: rId9.png]"]`` — one per embedded image.
+        Works even if relationship data is not available (returns generic marker).
+        """
+        markers: List[str] = []
+        if para is None:
+            return markers
+
+        try:
+            blips = para._element.findall(
+                f'.//{{{cls._BLIP_NS}}}blip'
+            )
+        except Exception:
+            return markers
+
+        for blip in blips:
+            embed = blip.get(f'{{{cls._REL_NS}}}embed')
+            if embed:
+                # Try to get the actual extension from relationships
+                ext = '.png'  # default
+                try:
+                    from docx import Document as _Doc
+                    # Access part through the element's document
+                    doc_element = para._element.getroottree()
+                    # We can't easily get rels from here, use filename-based approach
+                    if hasattr(para, 'part') and hasattr(para.part, 'rels'):
+                        rel = para.part.rels.get(embed)
+                        if rel and hasattr(rel, 'target_part'):
+                            ct = getattr(rel.target_part, 'content_type', '')
+                            ext = cls._IMAGE_EXT_MAP.get(ct, '.bin')
+                except Exception:
+                    pass
+                markers.append(f'[图片: {embed}{ext}]')
+            else:
+                markers.append('[图片]')
+
+        return markers
+
+    def get_chapter_images(self, chapter: ChapterNode,
+                           output_dir: str) -> Dict[str, str]:
+        """Extract all images in a chapter to files on disk.
+
+        Args:
+            chapter: The chapter node
+            output_dir: Directory to save extracted image files
+
+        Returns:
+            Dict mapping embed ID (e.g. ``"rId9"``) to saved file path
+        """
+        import os
+        os.makedirs(output_dir, exist_ok=True)
+
+        end_para = self._find_chapter_end(chapter)
+        start_para = chapter.heading_paragraph_index
+        saved: Dict[str, str] = {}
+
+        for para_idx in range(start_para, end_para):
+            if para_idx >= len(self.store.paragraphs_data):
+                break
+            pd = self.store.paragraphs_data[para_idx]
+            para = pd.paragraph
+            if para is None:
+                continue
+
+            try:
+                blips = para._element.findall(
+                    f'.//{{{self._BLIP_NS}}}blip'
+                )
+            except Exception:
+                continue
+
+            for blip in blips:
+                embed = blip.get(f'{{{self._REL_NS}}}embed')
+                if not embed:
+                    continue
+                if embed in saved:
+                    continue  # already extracted (same image may repeat)
+
+                rel = self.document.part.rels.get(embed)
+                if rel is None or 'image' not in (rel.reltype or ''):
+                    continue
+                try:
+                    image_bytes = rel.target_part.blob
+                except Exception:
+                    continue
+
+                ct = getattr(rel.target_part, 'content_type', '')
+                ext = self._IMAGE_EXT_MAP.get(ct, '.bin')
+                filename = f'{embed}{ext}'
+                save_path = os.path.join(output_dir, filename)
+                with open(save_path, 'wb') as f:
+                    f.write(image_bytes)
+                saved[embed] = save_path
+
+        return saved
+
+    # ---- Public Utilities ----
+
+    def get_chapter_for_paragraph(
+        self, para_index: int
+    ) -> Optional[ChapterNode]:
+        """Get the chapter that contains a given paragraph index.
+
+        Args:
+            para_index: Index into ``document.paragraphs``
+
+        Returns:
+            ChapterNode that contains this paragraph, or None if not found
+        """
+        return self._paragraph_to_chapter.get(para_index)
+
+    def list_chapters(self) -> List[ChapterNode]:
+        """List all chapters in depth-first order.
+
+        Returns:
+            Flat list of all ChapterNode objects in document order
+        """
+        return self._iter_all_nodes()
+
+    def generate_toc_entries(
+        self, max_level: int = 9
+    ) -> List[Tuple[str, str, int]]:
+        """Generate table-of-contents entries from the chapter tree.
+
+        Returns entries in document (depth-first) order, filtered by
+        ``max_level``.  Each entry is ``(number_string, heading_text, level)``.
+
+        Args:
+            max_level: Maximum heading level to include (default 9 = all)
+
+        Returns:
+            List of ``(number_string, heading_text, level)`` tuples.
+            ``number_string`` is something like ``"3.1.1"``, or ``""`` when
+            the heading has no number tuple.
+        """
+        entries: List[Tuple[str, str, int]] = []
+        for node in self._iter_all_nodes():
+            if node.heading_level > max_level:
+                continue
+            num = node.to_string()
+            # to_string() falls back to heading_text when no number_tuple
+            # — in that case use empty string for the number
+            if node.number_tuple is None:
+                num = ''
+            entries.append((num, node.heading_text, node.heading_level))
+        return entries
+
+    def tree_to_string(self, indent: int = 2) -> str:
+        """Return a visual string representation of the chapter tree.
+
+        Args:
+            indent: Spaces per indent level (default 2)
+
+        Returns:
+            Multi-line string showing the tree hierarchy
+        """
+        lines: List[str] = []
+
+        def _walk(nodes: List[ChapterNode], depth: int):
+            for node in nodes:
+                num = node.to_string()
+                title = node.heading_text
+                prefix = ' ' * (depth * indent)
+                body_count = len(node.body_paragraph_indices)
+                children_count = len(node.children)
+                info = f'({body_count} body para'
+                if children_count:
+                    info += f', {children_count} children'
+                info += ')'
+                lines.append(f'{prefix}{num} {title} {info}')
+                if node.children:
+                    _walk(node.children, depth + 1)
+
+        _walk(self.root_chapters, 0)
+        return '\n'.join(lines)
 
     # ---- Deletion ----
 
