@@ -10,14 +10,11 @@ import os
 import sys
 import tempfile
 
-# Make docx_editor importable
+# Make docx_editor importable (bundled in skills/docx-mode/docx_editor/)
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-_PROJECT_DIR = os.path.abspath(os.path.join(_SCRIPT_DIR, '..', '..', '..'))
-# Fallback: if auto-detection doesn't find docx_editor, use known project path
-if not os.path.isdir(os.path.join(_PROJECT_DIR, 'docx_editor')):
-    _PROJECT_DIR = 'E:/demo/docx'
-if _PROJECT_DIR not in sys.path:
-    sys.path.insert(0, _PROJECT_DIR)
+_SKILL_DIR = os.path.abspath(os.path.join(_SCRIPT_DIR, '..'))
+if _SKILL_DIR not in sys.path:
+    sys.path.insert(0, _SKILL_DIR)
 
 from docx_editor.creator import DocxCreator
 
