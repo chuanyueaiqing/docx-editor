@@ -2,7 +2,7 @@
 
 [![Python](https://img.shields.io/badge/Python-3.8%2B-blue)](https://python.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow)](LICENSE)
-[![CI](https://github.com/chenxiaochuan/docx-editor/actions/workflows/ci.yml/badge.svg)](https://github.com/chenxiaochuan/docx-editor/actions/workflows/ci.yml)
+[![CI](https://github.com/chuanyuepingfang/docx-editor/actions/workflows/ci.yml/badge.svg)](https://github.com/chuanyuepingfang/docx-editor/actions/workflows/ci.yml)
 
 **English** | [中文](#chinese)
 

@@ -38,9 +38,9 @@ mermaid = []
 all = ["docx-editor[win32,images,mermaid]"]
 
 [project.urls]
-Homepage = "https://github.com/chenxiaochuan/docx-editor"
-Repository = "https://github.com/chenxiaochuan/docx-editor"
-Documentation = "https://github.com/chenxiaochuan/docx-editor#readme"
+Homepage = "https://github.com/chuanyuepingfang/docx-editor"
+Repository = "https://github.com/chuanyuepingfang/docx-editor"
+Documentation = "https://github.com/chuanyuepingfang/docx-editor#readme"
 
 [tool.setuptools.packages.find]
 include = ["docx_editor*"]
