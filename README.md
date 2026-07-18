@@ -78,6 +78,44 @@ python scripts/batch_replace.py input.docx output.docx --sections changes.json -
 
 > **Note:** On Windows with Chinese content, set `PYTHONIOENCODING=utf-8` to avoid GBK encoding errors.
 
+## Claude Code Skill Integration
+
+This repository includes a **Claude Code skill** (`skills/docx-mode/`) that enables AI-assisted DOCX editing through natural language commands.
+
+### Installation
+
+```bash
+# Clone this repo (if you haven't already)
+git clone https://github.com/chuanyueaiqing/docx-editor.git
+
+# Install the skill for Claude Code
+cp -r skills/docx-mode ~/.claude/skills/
+```
+
+Or, if you want to keep it in sync with the repo:
+
+```bash
+# Symlink instead of copy (Linux/Mac)
+ln -s $(pwd)/skills/docx-mode ~/.claude/skills/docx-mode
+```
+
+### Usage
+
+Once installed, tell Claude Code you want to work with a DOCX file. The skill will be auto-invoked when you mention `.docx` files, Word documents, comments, chapter edits, or report formatting.
+
+Available commands inside the skill:
+
+| Task | Command |
+|------|---------|
+| Create DOCX from markdown | `/docx-mode create output.docx --content "# Title"` |
+| View chapter tree | `/docx-mode analyze tree document.docx` |
+| Read chapter content | `/docx-mode analyze contents document.docx 3` |
+| Replace a chapter | `/docx-mode analyze replace document.docx 2.1 --content "# New"` |
+| Format analysis | `/docx-mode analyze format-report document.docx` |
+| Batch replace | `/docx-mode batch input.docx output.docx --sections changes.json` |
+
+The skill works in both English and Chinese — you can say things like "帮我替换第三章内容" or "replace chapter 3.1 with this markdown".
+
 ## Architecture
 
 ```
@@ -161,6 +199,33 @@ creator.set_default_format({'font_name': '宋体', 'font_size': 12})
 creator.add_markdown('# 标题\n\n正文内容')
 creator.save('new.docx')
 ```
+
+### Claude Code 技能集成
+
+本仓库包含一个 **Claude Code 技能**（`skills/docx-mode/`），让你可以通过自然语言与 Claude Code 对话来完成 DOCX 编辑操作。
+
+#### 安装方法
+
+```bash
+# 克隆仓库
+git clone https://github.com/chuanyueaiqing/docx-editor.git
+
+# 安装技能到 Claude Code
+cp -r skills/docx-mode ~/.claude/skills/
+```
+
+安装后，当你在 Claude Code 中提及 .docx 文件、Word 文档、批注、章节修改等关键词时，技能会自动激活。
+
+#### 常用操作
+
+| 任务 | 自然语言指令 |
+|------|-------------|
+| 从 Markdown 创建 DOCX | "帮我用这些 Markdown 内容创建一个 DOCX 文档" |
+| 查看章节结构 | "帮我看看这个文档的章节树" |
+| 替换章节内容 | "把第3.1节替换成以下内容" |
+| 格式一致性检查 | "检查这个文档的格式是否一致" |
+| 处理批注 | "帮我看看文档里有哪些批注" |
+| 批量替换 | "按这个 JSON 配置批量替换章节" |
 
 ### 架构
 
