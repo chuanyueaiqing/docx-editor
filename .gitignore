@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# CodeGraph index
+.codegraph/
+
+# Output files
+output/
+
+# Archives
+*.zip
+
+# Test outputs
+test_output/
+
+# Environment
+.env
+.env.local
+venv/
+.venv/
