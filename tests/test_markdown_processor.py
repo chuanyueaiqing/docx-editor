@@ -147,3 +147,31 @@ class TestMarkdownConversion:
         doc = empty_store.document
         texts = [p.text for p in doc.paragraphs if p.text.strip()]
         assert len(texts) >= 3
+
+    def test_code_block_to_docx(self, empty_store):
+        """Code blocks render as a single-cell table with monospace formatting."""
+        from docx.shared import Pt
+        mp = MarkdownProcessor(empty_store)
+        elements = mp.parse_markdown(
+            "```python\ndef hello():\n    print('Hi')\n```"
+        )
+        mp.apply_to_document(elements)
+        doc = empty_store.document
+
+        # Should produce exactly one table
+        assert len(doc.tables) == 1
+        table = doc.tables[0]
+        assert len(table.rows) == 1
+        assert len(table.columns) == 1
+
+        # Cell contains all code lines (indentation preserved)
+        cell = table.cell(0, 0)
+        texts = [p.text for p in cell.paragraphs]
+        assert texts[0] == "def hello():"
+        assert "    print('Hi')" in texts
+
+        # Font is Consolas, 9pt
+        for para in cell.paragraphs:
+            for run in para.runs:
+                assert run.font.name == 'Consolas'
+                assert run.font.size == Pt(9)

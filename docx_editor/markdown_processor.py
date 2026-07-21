@@ -604,19 +604,95 @@ class MarkdownProcessor:
         language: Optional[str] = None,
         template: Optional[ParagraphData] = None,
     ):
-        """Add a code block as monospace-formatted paragraphs."""
-        created = []
+        """Add a code block as a styled single-cell table with monospace text.
+
+        Uses a 1×1 table as the visual container so the entire code block
+        shares one border and background — the standard Word technique.
+        """
+        from docx.shared import Pt, Cm
+        from docx.oxml import OxmlElement
+        from docx.oxml.ns import qn
+        from docx.enum.text import WD_LINE_SPACING
+
+        # ── 1×1 table ──
+        table = self.document.add_table(rows=1, cols=1)
+
+        # ── Table-level properties ──
+        tbl = table._tbl
+        tblPr = tbl.tblPr
+        if tblPr is None:
+            tblPr = OxmlElement('w:tblPr')
+            tbl.insert(0, tblPr)
+
+        # Borders: solid box, dark gray, 0.5 pt
+        borders = OxmlElement('w:tblBorders')
+        for edge in ('top', 'left', 'bottom', 'right', 'insideH', 'insideV'):
+            el = OxmlElement(f'w:{edge}')
+            if edge in ('insideH', 'insideV'):
+                el.set(qn('w:val'), 'none')
+            else:
+                el.set(qn('w:val'), 'single')
+                el.set(qn('w:sz'), '4')          # 0.5pt = 4 eighth-points
+                el.set(qn('w:color'), '808080')  # Dark gray
+            el.set(qn('w:space'), '0')
+            borders.append(el)
+        tblPr.append(borders)
+
+        # Table width: 100 % of container
+        tblW = OxmlElement('w:tblW')
+        tblW.set(qn('w:w'), '5000')
+        tblW.set(qn('w:type'), 'pct')
+        tblPr.append(tblW)
+
+        # ── Cell formatting ──
+        cell = table.cell(0, 0)
+        tc = cell._tc
+        tcPr = tc.get_or_add_tcPr()
+
+        # Background: very light gray
+        shd = OxmlElement('w:shd')
+        shd.set(qn('w:val'), 'clear')
+        shd.set(qn('w:color'), 'auto')
+        shd.set(qn('w:fill'), 'F2F2F2')
+        tcPr.append(shd)
+
+        # Cell margins (padding) — 4 pt = 80 twips on each side
+        tcMar = OxmlElement('w:tcMar')
+        for edge in ('top', 'left', 'bottom', 'right'):
+            el = OxmlElement(f'w:{edge}')
+            el.set(qn('w:w'), '80')
+            el.set(qn('w:type'), 'dxa')
+            tcMar.append(el)
+        tcPr.append(tcMar)
+
+        # Remove the default empty paragraph python-docx inserts in every cell
+        default_para = cell.paragraphs[0]
+        default_para._element.getparent().remove(default_para._element)
+
+        # ── Code lines as paragraphs inside the cell ──
         lines = code.split('\n')
-        for line in lines:
-            para = self.document.add_paragraph()
+        for i, line in enumerate(lines):
+            para = cell.add_paragraph()
             run = para.add_run(line)
-            run.font.name = 'Courier New'
+            run.font.name = 'Consolas'
             run.font.size = Pt(9)
-            if template and template.formatting:
-                # Code blocks use monospace — don't apply body font, only spacing
-                self._apply_paragraph_format(para, template.formatting)
-            created.append(para)
-        return created
+
+            pf = para.paragraph_format
+            pf.left_indent = Cm(0.5)           # ≈ 2 characters
+            pf.line_spacing = Pt(12)
+            pf.line_spacing_rule = WD_LINE_SPACING.EXACTLY
+
+            # Vertical gap before the first line and after the last line
+            if i == 0:
+                pf.space_before = Pt(6)
+            elif i == len(lines) - 1:
+                pf.space_after = Pt(6)
+
+        # Ensure _element compatibility — build_elements_for_chapter reads `_element`
+        if not hasattr(table, '_element'):
+            table._element = table._tbl
+
+        return table
 
     def _add_list(
         self,
@@ -796,11 +872,16 @@ class MarkdownProcessor:
         result = []
         for item in created:
             if hasattr(item, '_element'):
-                result.append(item._element)
-                # Remove from document (they'll be re-inserted elsewhere)
-                try:
-                    item._element.getparent().remove(item._element)
-                except Exception:
-                    pass
+                element = item._element
+            elif hasattr(item, '_tbl'):
+                element = item._tbl
+            else:
+                continue
+            result.append(element)
+            # Remove from document (they'll be re-inserted elsewhere)
+            try:
+                element.getparent().remove(element)
+            except Exception:
+                pass
 
         return result
