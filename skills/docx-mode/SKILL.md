@@ -18,7 +18,7 @@ description: |
 
 | 任务 | 命令 |
 |------|------|
-| 从 Markdown 创建 DOCX | `PYTHONIOENCODING=utf-8 py scripts/create_docx.py --content "..." --output out.docx [格式参数]` |
+| 从 Markdown 创建 DOCX | `PYTHONIOENCODING=utf-8 py scripts/create_docx.py --content "..." --output out.docx [格式参数] [--math-font "Times New Roman"]` |
 | 查看章节树 | `PYTHONIOENCODING=utf-8 py scripts/analyze_docx.py tree path.docx` |
 | 读取章节内容 | `PYTHONIOENCODING=utf-8 py scripts/analyze_docx.py contents path.docx 3` |
 | 格式一致性报告 | `PYTHONIOENCODING=utf-8 py scripts/analyze_docx.py format-report path.docx` |
@@ -28,6 +28,7 @@ description: |
 | 查看批注上下文 | `PYTHONIOENCODING=utf-8 py scripts/analyze_docx.py comments-with-context path.docx` |
 | 删除单条批注 | `PYTHONIOENCODING=utf-8 py scripts/analyze_docx.py delete-comment path.docx <comment_id>` |
 | 删除所有批注 | `PYTHONIOENCODING=utf-8 py scripts/analyze_docx.py delete-all-comments path.docx` |
+| **一次性文档验证** | `PYTHONIOENCODING=utf-8 py scripts/verify_docx.py path.docx` |
 | 通篇改正文格式 | `PYTHONIOENCODING=utf-8 py scripts/analyze_docx.py apply-format path.docx --target body --font-name 黑体 --font-size 14` |
 | 插入目录 | `py -c "from docx_editor import DocxDocument; d=DocxDocument('path.docx'); d.insert_toc(); d.save()"` |
 | 刷新目录 | `py -c "from docx_editor import DocxDocument; d=DocxDocument('path.docx'); d.refresh_toc(); d.save()"` |
@@ -72,6 +73,11 @@ description: |
   - Word 不可用或 WPS 冲突时，自动切换到 WPS 的 COM 接口（需要 WPS Office 已安装）
   - 两者都不可用时回退到直接替换（无修订标记）
 - **Mermaid 图**：如果在创建或替换时用到 mermaid 代码块，需要 `mmdc` CLI 来渲染为图片。不可用时回退为代码块
+- **数学公式（$...$ / $$...$$）**：文档中的 LaTeX 数学公式自动转为 Word 原生可编辑公式（OMML 格式）
+  - 转换引擎使用 **Pandoc**（需要系统中安装 pandoc，`pip install pypandoc`），优先将 LaTeX 转为标准 OMML
+  - Pandoc 不可用时自动回退到内置 OMML builder（支持基础公式：分式、根式、上下标、希腊字母等）
+  - **公式字体配置**：通过 `--math-font "Times New Roman"` 或 `set_default_format({'math_font': 'Times New Roman'})` 指定公式专用字体，默认 Cambria Math
+  - 14/15 的常见复杂公式可通过 Pandoc 正确转换（极限：5 层以上嵌套连分数会回退到内置 builder）
 - **工作目录**：所有命令应在 `E:\demo\docx\` 下执行
 - **Windows 编码注意**：在 Git Bash 终端下运行 `py scripts/` 命令时，如果文档包含中文，必须添加 `PYTHONIOENCODING=utf-8` 环境变量前缀，避免 GBK 编码报错。例如：`PYTHONIOENCODING=utf-8 py scripts/analyze_docx.py comments-with-context path.docx`
 
@@ -96,8 +102,9 @@ description: |
 | 对齐方式 | 两端对齐 / 左对齐 | 默认两端对齐 |
 | 首行缩进 | 2 字符 (约 24pt) | 中文正文常见 |
 | 段后间距 | 6pt / 0pt | 段落之间间距 |
+| 公式字体 | Cambria Math / Times New Roman | 公式专用字体（默认 Cambria Math） |
 
-如果用户表示"按默认就行"，使用：宋体 / Times New Roman / 12pt / 1.5 行距 / 两端对齐 / 首行缩进 24pt / 段后 6pt。
+如果用户表示"按默认就行"，使用：宋体 / Times New Roman / 12pt / 1.5 行距 / 两端对齐 / 首行缩进 24pt / 段后 6pt。公式字体默认 Cambria Math。
 
 **Step 2: 用户提供 Markdown 内容**
 
@@ -115,22 +122,25 @@ PYTHONIOENCODING=utf-8 py scripts/create_docx.py \
   --line-spacing 1.5 \
   --alignment JUSTIFY \
   --first-line-indent 24 \
-  --space-after 6
+  --space-after 6 \
+  --math-font "Cambria Math"
 ```
 
 如果用户有 .md 文件，用 `--input file.md` 代替 `--content`。
 
-**Step 4: 验证**
+**Step 4: 验证（一次性）**
 
 ```bash
-# 看章节结构
-PYTHONIOENCODING=utf-8 py scripts/analyze_docx.py tree output.docx
+# 单条命令输出全部信息：格式、字数、章节、公式数、统计
+PYTHONIOENCODING=utf-8 py scripts/verify_docx.py output.docx
 
-# 看文本内容
-python -m markitdown output.docx
+# JSON 模式（程序化检查）
+PYTHONIOENCODING=utf-8 py scripts/verify_docx.py output.docx --json
 ```
 
-- 如果有 mermaid 代码块，确认是否渲染为图片（不可用时会回退为代码块）
+输出涵盖：默认格式（字体/字号/行距/对齐/缩进）、内容统计（段落/标题/表格/图片/公式/字数）、章节结构、错误/警告。**不允许**再用多轮逐项验证的方式。
+
+- 如果有 mermaid 代码块，确认是否渲染为图片（不可用时回退为代码块）
 - 如果有图片链接，检查路径是否正确
 
 **Step 5 (可选): 插入目录**
@@ -241,12 +251,11 @@ PYTHONIOENCODING=utf-8 py scripts/analyze_docx.py replace path.docx "2.1" \
 **Step 4: 验证修改**
 
 ```bash
-# 检查章节结构
-PYTHONIOENCODING=utf-8 py scripts/analyze_docx.py tree output.docx
+# 一次性检查结构和格式
+PYTHONIOENCODING=utf-8 py scripts/verify_docx.py output.docx
 
-# 检查文本内容
+# 如需查看指定章节的具体文本
 PYTHONIOENCODING=utf-8 py scripts/analyze_docx.py contents output.docx "2.1"
-python -m markitdown output.docx
 ```
 
 **⚠️ 目录（TOC）自动刷新**：如果文档之前已经插入了目录，`replace_chapter` 和 `delete_chapter` 会自动刷新目录——删除旧的条目，基于最新的章节树重新生成。无需手动操作。
@@ -507,6 +516,7 @@ PYTHONIOENCODING=utf-8 py scripts/analyze_docx.py apply-format path.docx \
 
 ### Python 包
 - `python-docx` — 核心 DOCX 读写能力（已安装）
+- `pypandoc` — LaTeX 公式转 OMML（可选，`pip install pypandoc`，需系统安装 pandoc）
 - `pywin32` — Win32 COM 自动化（可选，仅修订模式需要）
 - `Pillow` — 图片处理（可选）
 - `markitdown` — 文本验证（可选，`pip install markitdown`）
