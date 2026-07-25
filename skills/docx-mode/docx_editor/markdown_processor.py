@@ -6,6 +6,7 @@ Supports custom table merge markers:
   - '>' in a cell = horizontal merge (merge with cell to the left)
   - 'v' in a cell = vertical merge (merge with cell above)
 """
+import logging
 import os
 import re
 from typing import List, Optional, Tuple
@@ -13,6 +14,7 @@ from typing import List, Optional, Tuple
 from docx import Document
 from docx.shared import Inches, Pt, RGBColor, Emu
 from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.oxml import OxmlElement
 from docx.oxml.ns import qn as docx_qn
 
 from .models import (
@@ -20,6 +22,8 @@ from .models import (
     ParagraphData, FormattingData, ParagraphFormatData,
 )
 from .utils import qn
+
+logger = logging.getLogger(__name__)
 
 
 class MarkdownProcessor:
@@ -43,14 +47,27 @@ class MarkdownProcessor:
     RE_UNORDERED_LIST = re.compile(r'^\s*[-*+]\s+(.+)$')
     RE_HORIZONTAL_RULE = re.compile(r'^[-*_]{3,}\s*$')
     RE_BLOCKQUOTE = re.compile(r'^>\s?(.*)$')
+    RE_INLINE_MATH = re.compile(r'\$(?!\$)(.+?)\$')          # $...$ 行内公式（非贪婪）
+    RE_DISPLAY_MATH = re.compile(r'\$\$(.+?)\$\$', re.DOTALL)  # $$...$$ 行间公式（可跨行）
     RE_INLINE_BOLD = re.compile(r'\*\*(.+?)\*\*|__(.+?)__')
     RE_INLINE_ITALIC = re.compile(r'\*(.+?)\*|_(.+?)_')
     RE_INLINE_CODE = re.compile(r'`([^`]+)`')
     RE_INLINE_STRIKE = re.compile(r'~~(.+?)~~')
 
-    def __init__(self, format_store: FormatStore):
+    # Global counter for equation bookmark IDs (across all instances)
+    _math_counter = 0
+
+    def __init__(self, format_store: FormatStore, math_font: str = ''):
+        """Initialize the markdown processor.
+
+        Args:
+            format_store: FormatStore with document reference
+            math_font: Font name for math equations. If empty,
+                uses default 'Cambria Math'.
+        """
         self.store = format_store
         self.document = format_store.document
+        self.math_font = math_font or ''
 
     # ======================== Parsing ========================
 
@@ -206,31 +223,67 @@ class MarkdownProcessor:
 
             para_text = ' '.join(para_lines)
 
-            # Check if paragraph contains images
-            if '![' in para_text:
-                # Split by images
+            # --- Check for display math $$...$$ (block-level) ---
+            dm = self.RE_DISPLAY_MATH.match(para_text)
+            if dm and dm.group(0).strip() == para_text.strip():
+                # Entire paragraph is a display math block
+                elements.append(MarkdownElement(
+                    type=MarkdownElementType.DISPLAY_MATH,
+                    text=dm.group(1).strip(),
+                ))
+                continue
+
+            # --- Check for inline math $...$ and images within paragraph ---
+            has_inline_math = '$' in para_text and bool(self.RE_INLINE_MATH.search(para_text))
+            has_images = '![' in para_text
+
+            if has_inline_math or has_images:
+                # Split paragraph into segments: text / math / text / image / ...
+                segments: List[MarkdownElement] = []
                 remaining = para_text
                 last_end = 0
-                for m_img in self.RE_IMAGE.finditer(para_text):
-                    # Add text before image
-                    before = para_text[last_end:m_img.start()].strip()
+
+                # Use combined scanning: find both $...$ and ![alt](path)
+                # Build a combined pattern
+                combined = re.compile(
+                    r'(\$(?!\$).+?\$)|'            # group 1: inline math
+                    r'(!\[([^\]]*)\]\(([^)]+)\))',  # group 2+3+4: image
+                )
+
+                for m in combined.finditer(para_text):
+                    # Text before this match
+                    before = para_text[last_end:m.start()].strip()
                     if before:
-                        elements.append(MarkdownElement(
+                        segments.append(MarkdownElement(
                             type=MarkdownElementType.PARAGRAPH,
                             text=before,
                         ))
-                    elements.append(MarkdownElement(
-                        type=MarkdownElementType.IMAGE,
-                        alt_text=m_img.group(1),
-                        image_path=m_img.group(2),
-                    ))
-                    last_end = m_img.end()
+
+                    if m.group(1):
+                        # Inline math
+                        math_content = m.group(1)[1:-1]  # strip $ signs
+                        segments.append(MarkdownElement(
+                            type=MarkdownElementType.MATH,
+                            text=math_content,
+                        ))
+                    elif m.group(2):
+                        # Image
+                        segments.append(MarkdownElement(
+                            type=MarkdownElementType.IMAGE,
+                            alt_text=m.group(3),
+                            image_path=m.group(4),
+                        ))
+
+                    last_end = m.end()
+
                 after = para_text[last_end:].strip()
                 if after:
-                    elements.append(MarkdownElement(
+                    segments.append(MarkdownElement(
                         type=MarkdownElementType.PARAGRAPH,
                         text=after,
                     ))
+
+                elements.extend(segments)
             else:
                 elements.append(MarkdownElement(
                     type=MarkdownElementType.PARAGRAPH,
@@ -437,7 +490,126 @@ class MarkdownProcessor:
             for m in MarkdownProcessor.RE_IMAGE.finditer(text)
         ]
 
+    @staticmethod
+    def _fix_latex_math(latex: str) -> str:
+        """Fix LaTeX syntax that Pandoc cannot handle.
+
+        Converts or removes constructs that Pandoc's DOCX writer
+        does not support, falling back to equivalent representations.
+
+        Args:
+            latex: Raw LaTeX math expression (without $ delimiters)
+
+        Returns:
+            Fixed LaTeX string compatible with Pandoc
+        """
+        result = latex.strip()
+
+        # \cfrac (continued fraction) → \frac (standard fraction)
+        result = re.sub(r'\\cfrac(\s*\{)', r'\\frac\1', result)
+
+        # \dfrac (display fraction) → \frac (Pandoc handles both, but
+        # normalize to \frac for consistency)
+        result = re.sub(r'\\dfrac(\s*\{)', r'\\frac\1', result)
+
+        # \tfrac (text fraction) → \frac
+        result = re.sub(r'\\tfrac(\s*\{)', r'\\frac\1', result)
+
+        # \displaystyle / \textstyle — remove; Pandoc ignores them
+        # but they can confuse the parser in edge cases
+        result = re.sub(r'\\displaystyle\s*', '', result)
+        result = re.sub(r'\\textstyle\s*', '', result)
+
+        # \limits / \nolimits — remove (Pandoc applies them automatically)
+        result = re.sub(r'\\limits\s*', '', result)
+        result = re.sub(r'\\nolimits\s*', '', result)
+
+        # \label{...} / \tag{...} — remove (no concept in OMML)
+        result = re.sub(r'\\label\{[^}]*\}', '', result)
+        result = re.sub(r'\\tag\{[^}]*\}', '', result)
+        result = re.sub(r'\\tag\*\{[^}]*\}', '', result)
+
+        # \hfill — remove
+        result = re.sub(r'\\hfill\s*', '', result)
+
+        # \vspace / \hspace — remove (not supported in math mode)
+        result = re.sub(r'\\(?:v|h)space\{[^}]*\}', '', result)
+
+        # \color{...} → remove (Pandoc DOCX writer may trip)
+        result = re.sub(r'\\color\{[^}]*\}', '', result)
+
+        # \ddots (⋱), \vdots (⋮), \cdots (⋯) — replace with Unicode
+        # equivalents so Pandoc's TeX parser doesn't choke on them
+        # in deeply nested contexts (e.g. continued fractions)
+        result = result.replace(r'\ddots', '⋱')
+        result = result.replace(r'\vdots', '⋮')
+        # \cdots and \ldots are fine for Pandoc, but normalize for consistency
+        result = result.replace(r'\cdots', '⋯')
+        result = result.replace(r'\ldots', '…')
+
+        # \text{...} — Pandoc supports this, but nested braces inside
+        # \text can cause issues; no generic fix here
+
+        return result
+
     # ======================== DOCX Conversion ========================
+
+    @staticmethod
+    def _merge_inline_math_elements(
+        elements: List[MarkdownElement],
+    ) -> List[MarkdownElement]:
+        """Merge consecutive [PARA, MATH, PARA, MATH, ...] into composite paragraphs.
+
+        A paragraph containing inline math ``$...$`` is parsed into separate
+        ``PARAGRAPH`` / ``MATH`` elements.  This method re-joins them so each
+        consecutive run of text-and-math becomes a single ``PARAGRAPH`` whose
+        ``children`` hold the interleaved segments.
+
+        Pattern matched:  PARA + (MATH + PARA)⁺
+
+        Considers consecutive PARAGRAPHs as paragraph boundaries (blank lines
+        in markdown produce separate elements).  After merging, two consecutive
+        MATH-less PARAGRAPHs never end up in the same group.
+
+        Example::
+
+            [PARA("其中 "), MATH("E"), PARA("为电场强度")]
+
+            → [PARA(children=[PARA("其中 "), MATH("E"), PARA("为电场强度")])]
+        """
+        merged: List[MarkdownElement] = []
+        i = 0
+        while i < len(elements):
+            el = elements[i]
+            # Start a group when a PARAGRAPH is followed by a MATH
+            if (el.type == MarkdownElementType.PARAGRAPH
+                    and el.text is not None
+                    and i + 1 < len(elements)
+                    and elements[i + 1].type == MarkdownElementType.MATH):
+                group: List[MarkdownElement] = [el]
+                i += 1
+                # Consume alternating MATH + (optional trailing PARAGRAPH).
+                # The PARAGRAPH after a MATH is always included — it's the
+                # text following the equation in the same original paragraph.
+                # Two consecutive PARAGRAPHs (no MATH between them) naturally
+                # terminate the loop.
+                while (i < len(elements)
+                       and elements[i].type == MarkdownElementType.MATH):
+                    group.append(elements[i])
+                    i += 1
+                    if (i < len(elements)
+                            and elements[i].type
+                                == MarkdownElementType.PARAGRAPH):
+                        group.append(elements[i])
+                        i += 1
+                merged.append(MarkdownElement(
+                    type=MarkdownElementType.PARAGRAPH,
+                    children=group,
+                ))
+            else:
+                merged.append(el)
+                i += 1
+        return merged
 
     def apply_to_document(
         self,
@@ -460,6 +632,9 @@ class MarkdownProcessor:
         Returns:
             List of created docx paragraph/table objects
         """
+        # Merge consecutive [PARA, MATH, PARA, ...] into single paragraphs
+        elements = self._merge_inline_math_elements(elements)
+
         created = []
 
         for element in elements:
@@ -473,6 +648,16 @@ class MarkdownProcessor:
                     created.append(created_elements)
 
         return created
+
+    def get_pending_math(self) -> List[Tuple[int, str, bool]]:
+        """Get and clear pending math equation placeholders for COM post-processing.
+
+        Returns:
+            List of ``(paragraph_index, latex_text, is_display)`` tuples
+        """
+        result = getattr(self, '_pending_math', [])
+        self._pending_math = []
+        return result
 
     def _convert_element(
         self,
@@ -492,6 +677,10 @@ class MarkdownProcessor:
             return self._add_heading(element.text, element.level, heading_template)
 
         elif element.type == MarkdownElementType.PARAGRAPH:
+            if element.children:
+                return self._add_inline_math_paragraph(
+                    element.children, body_template,
+                )
             return self._add_paragraph(element.text, body_template)
 
         elif element.type == MarkdownElementType.TABLE:
@@ -520,6 +709,12 @@ class MarkdownProcessor:
 
         elif element.type == MarkdownElementType.EMPTY_LINE:
             return self._add_paragraph('', body_template)
+
+        elif element.type == MarkdownElementType.MATH:
+            return self._add_math_equation(element.text, display=False, template=body_template)
+
+        elif element.type == MarkdownElementType.DISPLAY_MATH:
+            return self._add_math_equation(element.text, display=True, template=body_template)
 
         return None
 
@@ -582,6 +777,57 @@ class MarkdownProcessor:
 
         return para
 
+    def _add_inline_math_paragraph(
+        self,
+        children: List[MarkdownElement],
+        template: Optional[ParagraphData] = None,
+    ):
+        """Create a single paragraph with interleaved text runs and inline math.
+
+        Each child element is a ``PARAGRAPH`` (text) or ``MATH`` (equation)
+        segment.  Text segments become ``<w:r>`` runs; math segments are
+        injected as inline ``<m:oMath>`` OMML elements inside the same
+        ``<w:p>``, exactly as Word renders inline equations.
+        """
+        para = self.document.add_paragraph()
+        run_fmt = self._extract_run_fmt(template)
+        if template and template.formatting:
+            self._apply_paragraph_format(para, template.formatting, run_fmt)
+
+        para_element = para._element
+
+        for child in children:
+            if child.type == MarkdownElementType.PARAGRAPH and child.text:
+                run = para.add_run(child.text)
+                self._apply_inline_format(run, {})
+            elif child.type == MarkdownElementType.MATH and child.text:
+                omath_elements = self._build_omml_for_latex(
+                    child.text, display=False,
+                )
+                # Insert OMML elements after the last run in the paragraph
+                runs = para_element.findall(docx_qn('w:r'))
+                if runs:
+                    self._inject_omml_into_paragraph(
+                        para_element, omath_elements, after_run=runs[-1],
+                    )
+                else:
+                    self._inject_omml_into_paragraph(
+                        para_element, omath_elements,
+                    )
+
+        # Apply template font to runs
+        if run_fmt:
+            from docx.shared import Pt
+            for run in para.runs:
+                if run_fmt.font_name and not run.font.name:
+                    run.font.name = run_fmt.font_name
+                if run_fmt.font_name_east_asia:
+                    self._set_run_font_east_asia(run, run_fmt.font_name_east_asia)
+                if run_fmt.size and run.font.size is None:
+                    run.font.size = Pt(run_fmt.size / 2)
+
+        return para
+
     def _add_image(self, element: MarkdownElement):
         """Add an image paragraph to the document."""
         para = self.document.add_paragraph()
@@ -604,19 +850,95 @@ class MarkdownProcessor:
         language: Optional[str] = None,
         template: Optional[ParagraphData] = None,
     ):
-        """Add a code block as monospace-formatted paragraphs."""
-        created = []
+        """Add a code block as a styled single-cell table with monospace text.
+
+        Uses a 1×1 table as the visual container so the entire code block
+        shares one border and background — the standard Word technique.
+        """
+        from docx.shared import Pt, Cm
+        from docx.oxml import OxmlElement
+        from docx.oxml.ns import qn
+        from docx.enum.text import WD_LINE_SPACING
+
+        # ── 1×1 table ──
+        table = self.document.add_table(rows=1, cols=1)
+
+        # ── Table-level properties ──
+        tbl = table._tbl
+        tblPr = tbl.tblPr
+        if tblPr is None:
+            tblPr = OxmlElement('w:tblPr')
+            tbl.insert(0, tblPr)
+
+        # Borders: solid box, dark gray, 0.5 pt
+        borders = OxmlElement('w:tblBorders')
+        for edge in ('top', 'left', 'bottom', 'right', 'insideH', 'insideV'):
+            el = OxmlElement(f'w:{edge}')
+            if edge in ('insideH', 'insideV'):
+                el.set(qn('w:val'), 'none')
+            else:
+                el.set(qn('w:val'), 'single')
+                el.set(qn('w:sz'), '4')          # 0.5pt = 4 eighth-points
+                el.set(qn('w:color'), '808080')  # Dark gray
+            el.set(qn('w:space'), '0')
+            borders.append(el)
+        tblPr.append(borders)
+
+        # Table width: 100 % of container
+        tblW = OxmlElement('w:tblW')
+        tblW.set(qn('w:w'), '5000')
+        tblW.set(qn('w:type'), 'pct')
+        tblPr.append(tblW)
+
+        # ── Cell formatting ──
+        cell = table.cell(0, 0)
+        tc = cell._tc
+        tcPr = tc.get_or_add_tcPr()
+
+        # Background: very light gray
+        shd = OxmlElement('w:shd')
+        shd.set(qn('w:val'), 'clear')
+        shd.set(qn('w:color'), 'auto')
+        shd.set(qn('w:fill'), 'F2F2F2')
+        tcPr.append(shd)
+
+        # Cell margins (padding) — 4 pt = 80 twips on each side
+        tcMar = OxmlElement('w:tcMar')
+        for edge in ('top', 'left', 'bottom', 'right'):
+            el = OxmlElement(f'w:{edge}')
+            el.set(qn('w:w'), '80')
+            el.set(qn('w:type'), 'dxa')
+            tcMar.append(el)
+        tcPr.append(tcMar)
+
+        # Remove the default empty paragraph python-docx inserts in every cell
+        default_para = cell.paragraphs[0]
+        default_para._element.getparent().remove(default_para._element)
+
+        # ── Code lines as paragraphs inside the cell ──
         lines = code.split('\n')
-        for line in lines:
-            para = self.document.add_paragraph()
+        for i, line in enumerate(lines):
+            para = cell.add_paragraph()
             run = para.add_run(line)
-            run.font.name = 'Courier New'
+            run.font.name = 'Consolas'
             run.font.size = Pt(9)
-            if template and template.formatting:
-                # Code blocks use monospace — don't apply body font, only spacing
-                self._apply_paragraph_format(para, template.formatting)
-            created.append(para)
-        return created
+
+            pf = para.paragraph_format
+            pf.left_indent = Cm(0.5)           # ≈ 2 characters
+            pf.line_spacing = Pt(12)
+            pf.line_spacing_rule = WD_LINE_SPACING.EXACTLY
+
+            # Vertical gap before the first line and after the last line
+            if i == 0:
+                pf.space_before = Pt(6)
+            elif i == len(lines) - 1:
+                pf.space_after = Pt(6)
+
+        # Ensure _element compatibility — build_elements_for_chapter reads `_element`
+        if not hasattr(table, '_element'):
+            table._element = table._tbl
+
+        return table
 
     def _add_list(
         self,
@@ -646,6 +968,109 @@ class MarkdownProcessor:
             docx_qn('w:color'): 'auto',
         })
         pPr.append(bord)
+        return para
+
+    def _build_omml_for_latex(self, latex: str, display: bool = False) -> List:
+        """Generate OMML XML elements for a LaTeX expression.
+
+        Tries Pandoc first, falls back to the built-in OMML builder.
+
+        Returns:
+            List of OMML elements (``lxml`` elements) that can be injected
+            into a ``<w:p>`` element.
+        """
+        fixed = self._fix_latex_math(latex)
+
+        # ── Primary path: Pandoc OMML ──
+        from .pandoc_omml import (
+            latex_to_omml,
+            latex_to_omml_display,
+            is_pandoc_available,
+        )
+        if is_pandoc_available():
+            if display:
+                elements = latex_to_omml_display(
+                    fixed, math_font=self.math_font,
+                )
+            else:
+                elements = latex_to_omml(
+                    fixed, math_font=self.math_font,
+                )
+            if elements:
+                return elements
+
+        # ── Fallback: built-in OMML builder ──
+        from .omml_builder import (
+            create_omath_paragraph,
+            create_omath_para_element,
+        )
+        if display:
+            elem = create_omath_para_element(
+                fixed, math_font=self.math_font,
+            )
+        else:
+            elem = create_omath_paragraph(
+                fixed, math_font=self.math_font,
+            )
+        return [elem]
+
+    def _inject_omml_into_paragraph(self, para_element, omath_elements: List,
+                                    *, after_run=None):
+        """Inject OMML elements into a paragraph's XML element.
+
+        Args:
+            para_element: The ``<w:p>`` lxml element.
+            omath_elements: List of OMML elements to inject.
+            after_run: Specific ``<w:r>`` element to insert after, or
+                ``None`` to inject after ``<w:pPr>``.
+        """
+        if after_run is not None:
+            for elem in reversed(omath_elements):
+                after_run.addnext(elem)
+            return
+
+        pPr = para_element.find(docx_qn('w:pPr'))
+        if pPr is not None:
+            for elem in reversed(omath_elements):
+                pPr.addnext(elem)
+        else:
+            for elem in omath_elements:
+                para_element.append(elem)
+
+    def _add_math_equation(
+        self,
+        latex: str,
+        display: bool = False,
+        template: Optional[ParagraphData] = None,
+    ):
+        """Add a LaTeX math equation as a proper OMML structured equation.
+
+        Uses Pandoc (via ``pypandoc``) as the primary conversion engine.
+        Falls back to the built-in OMML builder when pandoc is unavailable.
+
+        Args:
+            latex: LaTeX math expression (without $...$ delimiters)
+            display: True for display math (centered block), False for inline
+            template: Optional body template for formatting
+        """
+        para = self.document.add_paragraph()
+
+        if display:
+            from docx.enum.text import WD_ALIGN_PARAGRAPH
+            para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+        # Apply template formatting when available
+        if template and template.formatting:
+            run_fmt = self._extract_run_fmt(template)
+            self._apply_paragraph_format(para, template.formatting, run_fmt)
+
+        # Remove the default empty run python-docx inserts
+        default_para = para._element
+        for existing_run in list(default_para.findall(docx_qn('w:r'))):
+            default_para.remove(existing_run)
+
+        omath_elements = self._build_omml_for_latex(latex, display)
+        self._inject_omml_into_paragraph(default_para, omath_elements)
         return para
 
     def _build_table(self, element: MarkdownElement,
@@ -796,11 +1221,16 @@ class MarkdownProcessor:
         result = []
         for item in created:
             if hasattr(item, '_element'):
-                result.append(item._element)
-                # Remove from document (they'll be re-inserted elsewhere)
-                try:
-                    item._element.getparent().remove(item._element)
-                except Exception:
-                    pass
+                element = item._element
+            elif hasattr(item, '_tbl'):
+                element = item._tbl
+            else:
+                continue
+            result.append(element)
+            # Remove from document (they'll be re-inserted elsewhere)
+            try:
+                element.getparent().remove(element)
+            except Exception:
+                pass
 
         return result
