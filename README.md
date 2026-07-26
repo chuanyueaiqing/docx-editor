@@ -79,6 +79,27 @@ python scripts/batch_replace.py input.docx output.docx --sections changes.json -
 
 > **Note:** On Windows with Chinese content, set `PYTHONIOENCODING=utf-8` to avoid GBK encoding errors.
 
+### Mermaid Diagram Rendering
+
+Mermaid diagrams in DOCX require `@mermaid-js/mermaid-cli` (mmdc) with a Chrome/Chromium browser.
+
+```bash
+# Install mmdc
+npm install -g @mermaid-js/mermaid-cli
+```
+
+On first install, if Puppeteer fails to download its bundled Chrome (`chrome.exe` missing in cache), configure mmdc to use your system Chrome:
+
+```bash
+# Create ~/.mmdc.json pointing to your system Chrome
+echo '{"executablePath": "C:/Program Files/Google/Chrome/Application/chrome.exe"}' > ~/.mmdc.json
+
+# Then render with -p flag
+mmdc -p ~/.mmdc.json -i diagram.mmd -o diagram.png
+```
+
+If this file is present, `create_docx.py` will automatically use it when rendering mermaid blocks.
+
 ## Claude Code Skill Integration
 
 This repository includes a **Claude Code skill** (`skills/docx-mode/`) that enables AI-assisted DOCX editing through natural language commands.

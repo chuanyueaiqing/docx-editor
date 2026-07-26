@@ -78,6 +78,8 @@ description: |
   - Pandoc 不可用时自动回退到内置 OMML builder（支持基础公式：分式、根式、上下标、希腊字母等）
   - **公式字体配置**：通过 `--math-font "Times New Roman"` 或 `set_default_format({'math_font': 'Times New Roman'})` 指定公式专用字体，默认 Cambria Math
   - 14/15 的常见复杂公式可通过 Pandoc 正确转换（极限：5 层以上嵌套连分数会回退到内置 builder）
+  - **🚨 强制纪律：含公式的内容必须用 `--input file.md`，禁止用 `--content "..."`**：Bash/Python 的转义机制会吃掉 LaTeX 反斜杠（`\frac` 的 `\f` 变 control code，`\nabla` 等丢失），导致公式被跳过不渲染。用 `--input` 从文件读取可避免此问题。
+  - **验证公式数量用正确命名空间**：`verify_docx.py` 报告的"公式数"是可靠的。如需手动 XML 检查，OMML 的命名空间是 `m:`（`http://schemas.openxmlformats.org/officeDocument/2006/math`），用 `m:oMath` 搜索，不是 `w:oMath`。
 - **工作目录**：所有命令应在 `E:\demo\docx\` 下执行
 - **Windows 编码注意**：在 Git Bash 终端下运行 `py scripts/` 命令时，如果文档包含中文，必须添加 `PYTHONIOENCODING=utf-8` 环境变量前缀，避免 GBK 编码报错。例如：`PYTHONIOENCODING=utf-8 py scripts/analyze_docx.py comments-with-context path.docx`
 
