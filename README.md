@@ -22,6 +22,7 @@ Built on top of [python-docx](https://github.com/python-openxml/python-docx) wit
 - **Tracked changes** — Via Microsoft Word COM automation (`win32com`)
 - **WPS Office support** — Alternative COM automation for WPS Office
 - **Chinese heading detection** — Recognizes "第一章", "第1节", "第3.2条" etc.
+- **Formula/equation support** — LaTeX-to-DOCX formula rendering via UnicodeMath and OMML
 - **CLI tools** — Analyze, create, and batch-replace documents from the command line
 
 ## Installation
@@ -133,6 +134,11 @@ docx_editor/
 ├── utils.py              # Utilities and custom exceptions
 ├── win32_ops.py          # Microsoft Word COM automation
 ├── wps_ops.py            # WPS Office COM automation
+├── equation_ops.py       # Formula/equation insertion via win32com
+├── latex_to_unicodemath.py  # LaTeX → UnicodeMath conversion
+├── omml_builder.py       # OMML (Office Math Markup Language) builder
+├── pandoc_omml.py        # Pandoc OMML post-processing
+├── font_utils.py         # Font name and style utilities
 └── py.typed              # Type checker marker
 ```
 
@@ -180,6 +186,7 @@ Python 3.8+ (tested on 3.9–3.12, Windows and Linux).
 - **修订模式** — 通过 Microsoft Word COM 自动化实现
 - **WPS 支持** — 通过 WPS COM 自动化实现修订
 - **中文标题识别** — 支持"第一章"、"第1节"、"第3.2条"等中文章节编号
+- **公式支持** — LaTeX 公式渲染为 Word 可编辑的 OMML/UnicodeMath 公式
 - **命令行工具** — 分析、创建、批量替换文档
 
 ### 快速开始
@@ -244,6 +251,11 @@ docx_editor/
 ├── utils.py              # 工具函数与异常
 ├── win32_ops.py          # Word COM 自动化
 ├── wps_ops.py            # WPS COM 自动化
+├── equation_ops.py       # 公式插入（通过 win32com）
+├── latex_to_unicodemath.py  # LaTeX → UnicodeMath 转换
+├── omml_builder.py       # OMML 公式构建器
+├── pandoc_omml.py        # Pandoc OMML 后处理
+├── font_utils.py         # 字体工具
 └── py.typed              # 类型检查标记
 ```
 
