@@ -65,6 +65,9 @@ class DocxCreator:
             self.document = NewDocument()
 
         self._math_font = math_font or ''  # '' = default → Cambria Math
+        self._image_max_width = None   # cm, optional max image width
+        self._image_max_height = None  # cm, optional max image height
+        self._image_align = None       # paragraph alignment for images
 
         self.format_store = FormatStore(
             docx_path='',
@@ -174,6 +177,19 @@ class DocxCreator:
             self._math_font = format_spec['math_font']
             self.markdown_processor.math_font = format_spec['math_font']
 
+        # ── Image sizing & alignment ──
+        if 'image_max_width' in format_spec:
+            self._image_max_width = float(format_spec['image_max_width'])
+        if 'image_max_height' in format_spec:
+            self._image_max_height = float(format_spec['image_max_height'])
+        if 'image_align' in format_spec:
+            raw = format_spec['image_align']
+            if isinstance(raw, str):
+                _map = {'LEFT': 0, 'CENTER': 1, 'RIGHT': 2}
+                self._image_align = _map.get(raw.upper(), 0)
+            else:
+                self._image_align = raw
+
     def add_markdown(self, md_text: str):
         """Parse markdown text and append its content to the document.
 
@@ -191,6 +207,14 @@ class DocxCreator:
 
         # Render mermaid diagrams to images when possible
         rendered = self._render_mermaid_elements(elements)
+
+        # Pass image config to the markdown processor
+        if self._image_max_width is not None:
+            self.markdown_processor.image_max_width = self._image_max_width
+        if self._image_max_height is not None:
+            self.markdown_processor.image_max_height = self._image_max_height
+        if self._image_align is not None:
+            self.markdown_processor.image_align = self._image_align
 
         self.markdown_processor.apply_to_document(rendered)
 

@@ -67,8 +67,16 @@ python scripts/analyze_docx.py tree document.docx
 # Replace a chapter
 python scripts/analyze_docx.py replace document.docx "2.1" --content "# New" --output out.docx
 
-# Create document from markdown
+# Create document from markdown (basic)
 python scripts/create_docx.py --content "# Title\n\nBody" --output out.docx
+
+# Create document with full formatting (font, spacing, images)
+python scripts/create_docx.py --input doc.md --output report.docx \
+    --font-name "Times New Roman" --font-ea "宋体" --font-size 12 \
+    --line-spacing-rule EXACTLY --line-spacing 20 \
+    --alignment JUSTIFY --first-line-indent 24 --space-after 6 \
+    --image-max-width 15 --image-max-height 12 --image-align CENTER \
+    --math-font "Cambria Math"
 
 # Format analysis report
 python scripts/analyze_docx.py format-report document.docx

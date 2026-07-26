@@ -80,6 +80,13 @@ description: |
   - 14/15 的常见复杂公式可通过 Pandoc 正确转换（极限：5 层以上嵌套连分数会回退到内置 builder）
   - **🚨 强制纪律：含公式的内容必须用 `--input file.md`，禁止用 `--content "..."`**：Bash/Python 的转义机制会吃掉 LaTeX 反斜杠（`\frac` 的 `\f` 变 control code，`\nabla` 等丢失），导致公式被跳过不渲染。用 `--input` 从文件读取可避免此问题。
   - **验证公式数量用正确命名空间**：`verify_docx.py` 报告的"公式数"是可靠的。如需手动 XML 检查，OMML 的命名空间是 `m:`（`http://schemas.openxmlformats.org/officeDocument/2006/math`），用 `m:oMath` 搜索，不是 `w:oMath`。
+  - **🚨 强制纪律：行内公式用 `$...$`，行间公式用 `$$...$$`，不可混用**：`$$c$$` 是行间公式（独立居中段落），写在句子中间会被拆成独立段落，破坏排版。句子中的短符号用 `$f$`、`$\lambda$`、`$c$`，需要独立居中展示的大公式用 `$$\nabla \cdot \mathbf{E} = \frac{\rho}{\varepsilon_0}$$`。
+- **图片插入（三个必设参数）**：所有图片插入时必须指定三个参数，避免过大或模糊：
+  - `--image-max-width 15`：最大宽度 15cm，竖长图会自动限制高度（默认 12.7cm 硬编码已改为可配置）
+  - `--image-max-height 12`：最大高度 12cm，横宽图会自动限制宽度
+  - `--image-align CENTER`：图片段落居中
+  - **清晰度**：Mermaid 图渲染时用 `--width 1200`（至少 2x），确保 Word 中缩显示 DPI > 140。例如 15cm 宽显示时，1200px ÷ 5.9in ≈ 203 DPI，不会模糊。
+  - **图片一律居中、带图注**：图注需在创建完成后通过 Python 脚本按章节编号插入，create_docx.py 暂不支持自动图注。
 - **工作目录**：所有命令应在 `E:\demo\docx\` 下执行
 - **Windows 编码注意**：在 Git Bash 终端下运行 `py scripts/` 命令时，如果文档包含中文，必须添加 `PYTHONIOENCODING=utf-8` 环境变量前缀，避免 GBK 编码报错。例如：`PYTHONIOENCODING=utf-8 py scripts/analyze_docx.py comments-with-context path.docx`
 

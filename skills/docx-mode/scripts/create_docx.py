@@ -64,6 +64,16 @@ def parse_args(argv=None):
     parser.add_argument('--math-font', metavar='FONT', default='',
                         help='Font for math equations (default: Cambria Math)')
 
+    # Image options
+    parser.add_argument('--image-max-width', type=float, metavar='CM',
+                        help='Max image width in cm (e.g. 15). Images wider than '
+                             'this will be scaled down proportionally.')
+    parser.add_argument('--image-max-height', type=float, metavar='CM',
+                        help='Max image height in cm (e.g. 12).')
+    parser.add_argument('--image-align', metavar='ALIGN', default='',
+                        choices=('LEFT', 'CENTER', 'RIGHT', ''),
+                        help='Image paragraph alignment: LEFT / CENTER / RIGHT')
+
     return parser.parse_args(argv)
 
 
@@ -87,6 +97,12 @@ def build_format_spec(args) -> dict:
         spec['space_after'] = args.space_after
     if args.math_font:
         spec['math_font'] = args.math_font
+    if args.image_max_width:
+        spec['image_max_width'] = args.image_max_width
+    if args.image_max_height:
+        spec['image_max_height'] = args.image_max_height
+    if args.image_align:
+        spec['image_align'] = args.image_align
     return spec
 
 

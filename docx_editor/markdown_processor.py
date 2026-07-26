@@ -68,6 +68,9 @@ class MarkdownProcessor:
         self.store = format_store
         self.document = format_store.document
         self.math_font = math_font or ''
+        self.image_max_width = None   # in cm, from Creator
+        self.image_max_height = None  # in cm, from Creator
+        self.image_align = None       # WD_ALIGN_PARAGRAPH enum
 
     # ======================== Parsing ========================
 
@@ -829,15 +832,60 @@ class MarkdownProcessor:
         return para
 
     def _add_image(self, element: MarkdownElement):
-        """Add an image paragraph to the document."""
+        """Add an image paragraph to the document.
+
+        Applies configurable max width/height and alignment when set
+        via ``image_max_width`` / ``image_max_height`` / ``image_align``.
+        """
         para = self.document.add_paragraph()
+
+        # Apply image alignment (e.g. CENTER)
+        if self.image_align is not None:
+            para.alignment = self.image_align
 
         img_path = element.image_path
         if img_path and os.path.exists(img_path):
             try:
+                from PIL import Image as PILImage
                 run = para.add_run()
-                run.add_picture(img_path, width=Inches(5))
-            except Exception:
+                with PILImage.open(img_path) as img:
+                    img_w, img_h = img.size
+
+                # Base size at 96 DPI
+                DEFAULT_DPI = 96
+                w_in = img_w / DEFAULT_DPI
+                h_in = img_h / DEFAULT_DPI
+
+                # 1.5x scale adjusted by body font size (baseline 12pt)
+                try:
+                    base_font_size = self.document.styles['Normal'].font.size
+                    if base_font_size:
+                        font_pt = base_font_size.pt
+                    else:
+                        font_pt = 12
+                except Exception:
+                    font_pt = 12
+                scale = 1.5 * (font_pt / 12)
+                w_in *= scale
+                h_in *= scale
+
+                # Apply max constraints (values in cm → convert to inches)
+                if self.image_max_width is not None:
+                    max_w_in = self.image_max_width / 2.54
+                    if w_in > max_w_in:
+                        ratio = w_in / h_in
+                        w_in = max_w_in
+                        h_in = w_in / ratio
+                if self.image_max_height is not None:
+                    max_h_in = self.image_max_height / 2.54
+                    if h_in > max_h_in:
+                        ratio = w_in / h_in
+                        h_in = max_h_in
+                        w_in = h_in * ratio
+
+                from docx.shared import Inches
+                run.add_picture(img_path, width=Inches(w_in))
+            except (ImportError, Exception):
                 para.add_run(f"[Image: {element.alt_text or element.image_path}]")
         else:
             para.add_run(f"[Image: {element.alt_text or element.image_path}]")
