@@ -41,3 +41,9 @@ Thumbs.db
 
 # Claude Code
 skills-lock.json
+
+# Claude Code project config
+CLAUDE.md
+
+# Demo files
+*.docx
