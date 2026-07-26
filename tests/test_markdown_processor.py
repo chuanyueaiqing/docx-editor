@@ -118,6 +118,81 @@ class TestMarkdownParsing:
         empty = [e for e in elements if e.type == MarkdownElementType.EMPTY_LINE]
         assert len(empty) >= 0
 
+    # ── Math formula tests ──
+
+    def test_parse_display_math(self, empty_store):
+        """Display math ($$...$$) is parsed as DISPLAY_MATH."""
+        mp = MarkdownProcessor(empty_store)
+        elements = mp.parse_markdown(
+            "$$\\int_a^b f(x) \\, dx$$"
+        )
+        display_maths = [
+            e for e in elements if e.type == MarkdownElementType.DISPLAY_MATH
+        ]
+        assert len(display_maths) == 1
+        assert r'\int' in display_maths[0].text
+        assert 'f(x)' in display_maths[0].text
+
+    def test_parse_inline_math(self, empty_store):
+        """$...$ is parsed as MATH element."""
+        mp = MarkdownProcessor(empty_store)
+        elements = mp.parse_markdown(
+            "公式 $E=mc^2$ 是著名的质能方程"
+        )
+        maths = [e for e in elements if e.type == MarkdownElementType.MATH]
+        assert len(maths) == 1
+        assert 'E=mc^2' in maths[0].text
+
+    def test_parse_multiple_inline_math(self, empty_store):
+        """Multiple $...$ within one paragraph."""
+        mp = MarkdownProcessor(empty_store)
+        elements = mp.parse_markdown(
+            "$a^2$ 和 $b^2$ 的和"
+        )
+        maths = [e for e in elements if e.type == MarkdownElementType.MATH]
+        assert len(maths) == 2
+
+    def test_parse_math_with_paragraph(self, empty_store):
+        """Inline math splits paragraph into text + math segments."""
+        mp = MarkdownProcessor(empty_store)
+        elements = mp.parse_markdown(
+            "根据公式 $E=mc^2$ 可知能量巨大"
+        )
+        types = [e.type for e in elements]
+        assert MarkdownElementType.PARAGRAPH in types
+        assert MarkdownElementType.MATH in types
+        # Should have at least 3 elements: text before, math, text after
+        assert len(elements) >= 3
+
+    def test_parse_display_math_multiline(self, empty_store):
+        """Display math can span multiple lines."""
+        mp = MarkdownProcessor(empty_store)
+        md = ("$$\n"
+              "        \\int_{0}^{\\infty} e^{-x^2} \\, dx\n"
+              "        = \\frac{\\sqrt{\\pi}}{2}\n"
+              "        $$")
+        elements = mp.parse_markdown(md)
+        display_maths = [
+            e for e in elements if e.type == MarkdownElementType.DISPLAY_MATH
+        ]
+        assert len(display_maths) >= 1
+        text = display_maths[0].text
+        assert r'\int' in text
+        assert r'\infty' in text
+
+    def test_parse_math_then_paragraph(self, empty_store):
+        """Display math followed by normal text."""
+        mp = MarkdownProcessor(empty_store)
+        md = "$$\\sum_{i=1}^n i = \\frac{n(n+1)}{2}$$\n\n后续内容"
+        elements = mp.parse_markdown(md)
+        display_maths = [
+            e for e in elements if e.type == MarkdownElementType.DISPLAY_MATH
+        ]
+        paras = [e for e in elements if e.type == MarkdownElementType.PARAGRAPH]
+        assert len(display_maths) == 1
+        assert r'\sum' in display_maths[0].text
+        assert any('后续' in (p.text or '') for p in paras)
+
 
 class TestMarkdownConversion:
     def test_heading_to_docx(self, empty_store):
@@ -175,3 +250,42 @@ class TestMarkdownConversion:
             for run in para.runs:
                 assert run.font.name == 'Consolas'
                 assert run.font.size == Pt(9)
+
+    # ── Math formula conversion tests ──
+
+    def test_display_math_to_docx(self, empty_store):
+        """Display math produces an OMML equation with structure."""
+        mp = MarkdownProcessor(empty_store)
+        elements = mp.parse_markdown("$$E=mc^2$$")
+        mp.apply_to_document(elements)
+        body_xml = empty_store.document.element.body.xml
+
+        # Should have OMML elements
+        assert 'm:oMath' in body_xml or 'm:oMathPara' in body_xml
+
+    def test_inline_math_to_docx(self, empty_store):
+        """Inline math produces an OMML equation element."""
+        mp = MarkdownProcessor(empty_store)
+        elements = mp.parse_markdown("公式 $a^2+b^2=c^2$ 成立")
+        mp.apply_to_document(elements)
+        body_xml = empty_store.document.element.body.xml
+
+        # Should have OMML elements
+        assert 'm:oMath' in body_xml
+
+    def test_math_omml_structure(self, empty_store):
+        """Multiple formulas produce OMML with structural elements."""
+        mp = MarkdownProcessor(empty_store)
+        elements = mp.parse_markdown(
+            "$a^2$ 和 $b^2$ 的和"
+        )
+        mp.apply_to_document(elements)
+        body_xml = empty_store.document.element.body.xml
+
+        # Should have OMML elements for each formula
+        import re
+        omml_count = len(re.findall(r'<m:oMath[ >]', body_xml))
+        assert omml_count >= 2
+
+        # Should have superscript structure for ^2
+        assert 'm:sup' in body_xml

@@ -162,6 +162,8 @@ class MarkdownElementType(Enum):
     LIST_ITEM = "list_item"
     BLOCKQUOTE = "blockquote"
     EMPTY_LINE = "empty_line"
+    MATH = "math"                     # $...$ 行内公式
+    DISPLAY_MATH = "display_math"     # $$...$$ 行间公式
 
 
 @dataclass

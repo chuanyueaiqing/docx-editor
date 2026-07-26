@@ -66,6 +66,8 @@ class DocxDocument:
         use_track_changes: bool = False,
         detect_manual_headings: bool = False,
         heading_format_config: Optional[dict] = None,
+        *,
+        math_font: str = '',
     ):
         """Load a DOCX document and build internal data structures.
 
@@ -78,6 +80,8 @@ class DocxDocument:
                 heading style or outline level is set. Default: False.
             heading_format_config: Custom thresholds for manual heading
                 detection (see ChapterParser for defaults).
+            math_font: Font name for OMML math equations. Defaults to
+                ``'Cambria Math'`` if empty.
 
         Raises:
             FileNotFoundError: If the path does not exist
@@ -90,6 +94,7 @@ class DocxDocument:
         self.use_track_changes = use_track_changes
         self.detect_manual_headings = detect_manual_headings
         self._heading_format_config = heading_format_config
+        self._math_font = math_font or ''
 
         # Load the document
         self.document = DocxDocumentLoader(path)
@@ -112,13 +117,17 @@ class DocxDocument:
             detect_manual_headings=detect_manual_headings,
             heading_format_config=heading_format_config,
         )
-        self.markdown_processor = MarkdownProcessor(self.format_store)
+        self.markdown_processor = MarkdownProcessor(
+            self.format_store, math_font=self._math_font,
+        )
         self.mermaid_renderer = MermaidRenderer()
 
         # Track whether the document has been modified
         self._modified = False
         self._batch_counter = 0
         self._toc_position = None  # Remembered for auto-refresh
+
+        # Math equations are injected as native OMML during the build phase
 
     def _build_paragraphs_data(self):
         """Build ParagraphData list from document paragraphs and format store,
@@ -191,7 +200,9 @@ class DocxDocument:
             detect_manual_headings=self.detect_manual_headings,
             heading_format_config=self._heading_format_config,
         )
-        self.markdown_processor = MarkdownProcessor(self.format_store)
+        self.markdown_processor = MarkdownProcessor(
+            self.format_store, math_font=self._math_font,
+        )
 
     def _build_dominant_heading_template(self) -> Optional[ParagraphData]:
         """Build a merged template from all heading paragraphs.
@@ -1541,7 +1552,11 @@ class DocxDocument:
             if 'line_spacing' in format_spec:
                 val = format_spec['line_spacing']
                 if val is not None:
-                    pf.line_spacing = float(val)
+                    ls_rule = format_spec.get('line_spacing_rule', '')
+                    if ls_rule in ('EXACTLY', 'AT_LEAST'):
+                        pf.line_spacing = Pt(float(val))
+                    else:
+                        pf.line_spacing = float(val)
                     modified = True
 
             if 'line_spacing_rule' in format_spec:
@@ -1555,7 +1570,7 @@ class DocxDocument:
                 }
                 mapped = rule_map.get(val.upper() if isinstance(val, str) else val)
                 if mapped is not None:
-                    pf.line_spacing_rule = val
+                    pf.line_spacing_rule = mapped
                     modified = True
 
             if 'space_before' in format_spec:

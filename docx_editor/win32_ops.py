@@ -284,6 +284,76 @@ class Win32Ops:
 
         return revisions
 
+    # ── Equation / Formula Conversion ──
+
+    def convert_bookmark_to_equation(self, bookmark_name: str, input_text: str):
+        """Convert a bookmarked text paragraph into a native Word equation.
+
+        COM approach (tested on Word 365):
+        1. Go to the bookmark (moves cursor to bookmark location)
+        2. Delete the bookmark first (avoids control-char interference)
+        3. Type the math text (LaTeX for Word, UnicodeMath for WPS)
+        4. Call ``OMaths.Add(Selection.Range)`` to create equation from the text
+        5. Call ``BuildUp()`` to render as professional equation
+
+        Args:
+            bookmark_name: Name of the bookmark (e.g. '_MathEq_1')
+            input_text: Math expression (LaTeX for Word, UnicodeMath for WPS)
+
+        Raises:
+            Win32ComError: If bookmark is not found or conversion fails
+        """
+        if self.wd_doc is None:
+            raise RuntimeError("No document open")
+
+        try:
+            # 1. Locate the bookmark
+            try:
+                bookmark = self.wd_doc.Bookmarks(bookmark_name)
+                _ = bookmark.Range
+            except Exception:
+                logger.warning('Bookmark "%s" not found, skipping', bookmark_name)
+                return
+
+            # 2. Remember the bookmark range start position, then delete the bookmark.
+            #    Bookmarks can interfere with text replacement, so we remove them.
+            rng = bookmark.Range
+            start_pos = rng.Start
+            try:
+                bookmark.Delete()
+            except Exception:
+                pass
+
+            # 3. Insert the math text using TypeText (key behavior: TypeText goes
+            #    through Word's input pipeline which OMaths.Add relies on).
+            insert_rng = self.wd_doc.Range(start_pos, start_pos)
+            insert_rng.Select()
+            self.word.Selection.TypeText(input_text)
+
+            # 4. Create an equation from the typed text.
+            #    OMaths.Add with a collapsed selection at the end of the text
+            #    captures the preceding text as the equation's linear format.
+            self.word.Selection.OMaths.Add(self.word.Selection.Range)
+
+            # 5. Convert linear format to professional display
+            try:
+                if self.word.Selection.OMaths.Count > 0:
+                    eq = self.word.Selection.OMaths(1)
+                    eq.BuildUp()
+                    logger.debug('BuildUp succeeded for %s', bookmark_name)
+            except Exception as e:
+                logger.warning(
+                    'BuildUp failed for "%s": %s',
+                    bookmark_name, e,
+                )
+
+            logger.debug('Converted bookmark %s to equation', bookmark_name)
+
+        except Exception as e:
+            raise Win32ComError(
+                f"Failed to convert bookmark '{bookmark_name}' to equation: {e}"
+            ) from e
+
     # Microsoft Word's well-known CLSID
     MS_WORD_CLSID = "{000209FF-0000-0000-C000-000000000046}"
 

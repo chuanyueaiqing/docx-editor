@@ -4,6 +4,9 @@
 Usage:
     python scripts/create_docx.py --content "# Title\\n\\nBody" --output out.docx
     python scripts/create_docx.py --input doc.md --output out.docx --font-name "SimSun" --font-size 12
+    python scripts/create_docx.py --input doc.md --output out.docx --math-font "Times New Roman"
+    python scripts/create_docx.py --input doc.md --output out.docx \\
+        --line-spacing 20 --line-spacing-rule EXACTLY
 """
 import argparse
 import os
@@ -42,7 +45,15 @@ def parse_args(argv=None):
     parser.add_argument('--font-size', type=int, default=12,
                         help='Font size in points (default: 12)')
     parser.add_argument('--line-spacing', type=float, default=1.5,
-                        help='Line spacing multiplier (default: 1.5)')
+                        help='Line spacing value (default: 1.5). '
+                             'MULTIPLE: multiplier (1.0=单倍, 1.5=1.5倍, 2.0=双倍). '
+                             'EXACTLY/AT_LEAST: 固定值/最小值, 单位为磅.')
+    parser.add_argument('--line-spacing-rule', default='MULTIPLE',
+                        choices=('SINGLE', 'DOUBLE', 'MULTIPLE', 'EXACTLY', 'AT_LEAST'),
+                        help='Line spacing rule (default: MULTIPLE). '
+                             'SINGLE=单倍行距, DOUBLE=双倍行距, MULTIPLE=多倍行距, '
+                             'EXACTLY=固定值(配合--line-spacing指定磅值), '
+                             'AT_LEAST=最小值(配合--line-spacing指定磅值)')
     parser.add_argument('--alignment', default='JUSTIFY',
                         choices=('LEFT', 'CENTER', 'RIGHT', 'JUSTIFY'),
                         help='Paragraph alignment (default: JUSTIFY)')
@@ -50,6 +61,8 @@ def parse_args(argv=None):
                         help='First line indent in points (default: 24)')
     parser.add_argument('--space-after', type=float, default=6,
                         help='Space after paragraphs in points (default: 6)')
+    parser.add_argument('--math-font', metavar='FONT', default='',
+                        help='Font for math equations (default: Cambria Math)')
 
     return parser.parse_args(argv)
 
@@ -64,12 +77,16 @@ def build_format_spec(args) -> dict:
         spec['font_size'] = args.font_size
     if args.line_spacing:
         spec['line_spacing'] = args.line_spacing
+    if args.line_spacing_rule:
+        spec['line_spacing_rule'] = args.line_spacing_rule
     if args.alignment:
         spec['alignment'] = args.alignment
     if args.first_line_indent:
         spec['first_line_indent'] = args.first_line_indent
     if args.space_after:
         spec['space_after'] = args.space_after
+    if args.math_font:
+        spec['math_font'] = args.math_font
     return spec
 
 

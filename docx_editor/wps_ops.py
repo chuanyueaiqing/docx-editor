@@ -160,6 +160,79 @@ class WpsOps:
             raise RuntimeError("No document open")
         self.wd_doc.TrackRevisions = enabled
 
+    # ── Equation / Formula Conversion ──
+
+    def convert_bookmark_to_equation(self, bookmark_name: str, input_text: str):
+        """Convert a bookmarked text paragraph into a native WPS equation.
+
+        WPS does not understand raw LaTeX syntax, so the input must be in
+        UnicodeMath format.  Use ``latex_to_unicodemath()`` for conversion.
+
+        Flow:
+        1. Locate and delete the bookmark (avoids control-char interference)
+        2. Insert the math text (UnicodeMath) at the old bookmark position
+        3. Call ``OMaths.Add()`` to create an equation from the selected text
+        4. Call ``BuildUp()`` to render it as a professional equation
+
+        Args:
+            bookmark_name: Name of the bookmark (e.g. '_MathEq_1')
+            input_text: Math expression in UnicodeMath linear format
+        """
+        if self.wd_doc is None:
+            raise RuntimeError("No document open")
+
+        try:
+            # 1. Locate the bookmark
+            try:
+                bookmark = self.wd_doc.Bookmarks(bookmark_name)
+                _ = bookmark.Range
+            except Exception:
+                logger.warning('Bookmark "%s" not found, skipping', bookmark_name)
+                return
+
+            # 2. Remember position, then delete the bookmark
+            rng = bookmark.Range
+            start_pos = rng.Start
+            end_pos = rng.End
+            try:
+                bookmark.Delete()
+            except Exception:
+                pass
+
+            # 3. Insert the math text at the old bookmark position
+            text_rng = self.wd_doc.Range(start_pos, end_pos)
+            text_rng.Text = input_text
+
+            # 4. Select the text and create an equation
+            text_rng.Select()
+            try:
+                self.word.Selection.OMaths.Add(self.word.Selection.Range)
+            except Exception as e:
+                logger.warning(
+                    'WPS OMaths.Add failed for "%s": %s',
+                    bookmark_name, e,
+                )
+                return
+
+            # 5. Convert to professional display
+            try:
+                if self.word.Selection.OMaths.Count > 0:
+                    eq = self.word.Selection.OMaths(1)
+                    eq.BuildUp()
+                    logger.debug('WPS BuildUp succeeded for %s', bookmark_name)
+            except Exception as e:
+                logger.warning(
+                    'WPS BuildUp failed for "%s": %s',
+                    bookmark_name, e,
+                )
+
+            logger.debug('Converted bookmark %s to equation (WPS)', bookmark_name)
+
+        except Exception as e:
+            raise WpsComError(
+                f"Failed to convert bookmark '{bookmark_name}' to equation: {e}"
+            ) from e
+
     # ---- Detection ---- #
 
     @staticmethod

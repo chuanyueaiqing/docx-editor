@@ -22,7 +22,7 @@ import tempfile
 from typing import Any, Dict, List, Optional
 
 from docx import Document as NewDocument
-from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING
 from docx.oxml.ns import qn
 from docx.shared import Emu, Pt
 
@@ -48,24 +48,34 @@ class DocxCreator:
         DocxCreator.create('output.docx', md_text, format_spec={...})
     """
 
-    def __init__(self, template_path: Optional[str] = None):
+    def __init__(self, template_path: Optional[str] = None, *,
+                 math_font: str = ''):
         """Initialize a new document.
 
         Args:
             template_path: Optional path to a .docx to use as style
                 template. If omitted, python-docx defaults are used.
+            math_font: Font name for OMML math equations. Defaults to
+                ``'Cambria Math'`` if empty. Pass a different font name
+                (e.g. ``'Times New Roman'``) to override.
         """
         if template_path:
             self.document = NewDocument(template_path)
         else:
             self.document = NewDocument()
 
+        self._math_font = math_font or ''  # '' = default → Cambria Math
+
         self.format_store = FormatStore(
             docx_path='',
             document=self.document,
         )
-        self.markdown_processor = MarkdownProcessor(self.format_store)
+        self.markdown_processor = MarkdownProcessor(
+            self.format_store, math_font=self._math_font,
+        )
         self.mermaid_renderer = MermaidRenderer()
+
+        # Math equations are injected as native OMML during the build phase
 
     def set_default_format(self, format_spec: Dict[str, Any]):
         """Configure default paragraph and run formatting.
@@ -81,6 +91,8 @@ class DocxCreator:
         - ``space_before`` / ``space_after``: Paragraph spacing in points
         - ``alignment``: ``'LEFT'`` | ``'CENTER'`` | ``'RIGHT'`` | ``'JUSTIFY'``
         - ``first_line_indent``: Indent in points (e.g. ``24`` = 2 chars at 12pt)
+        - ``math_font``: Font name for OMML equations (e.g. ``'Times New Roman'``).
+          Defaults to ``'Cambria Math'`` if not specified.
 
         Args:
             format_spec: Dict of formatting properties
@@ -109,11 +121,33 @@ class DocxCreator:
 
         # Paragraph-level defaults on the style
         pf = style.paragraph_format
-        if 'line_spacing' in format_spec and format_spec['line_spacing'] is not None:
-            pf.line_spacing = float(format_spec['line_spacing'])
+        # 字符串 → 枚举 映射（用于 line_spacing_rule）
+        _LS_RULE_MAP = {
+            'SINGLE': WD_LINE_SPACING.SINGLE,
+            'DOUBLE': WD_LINE_SPACING.DOUBLE,
+            'MULTIPLE': WD_LINE_SPACING.MULTIPLE,
+            'AT_LEAST': WD_LINE_SPACING.AT_LEAST,
+            'EXACTLY': WD_LINE_SPACING.EXACTLY,
+        }
+        # 先转换 rule，再设置 spacing 值（因为 EXACTLY/AT_LEAST 需要 Pt() 类型）
+        ls_rule_enum = None
         if 'line_spacing_rule' in format_spec \
                 and format_spec['line_spacing_rule'] is not None:
-            pf.line_spacing_rule = format_spec['line_spacing_rule']
+            raw = format_spec['line_spacing_rule']
+            if isinstance(raw, str):
+                ls_rule_enum = _LS_RULE_MAP.get(raw.upper())
+            else:
+                ls_rule_enum = raw
+            if ls_rule_enum is not None:
+                pf.line_spacing_rule = ls_rule_enum
+
+        if 'line_spacing' in format_spec and format_spec['line_spacing'] is not None:
+            ls_val = format_spec['line_spacing']
+            # EXACTLY/AT_LEAST 需要 Pt() 类型，否则 python-docx 会按 MULTIPLE 处理
+            if ls_rule_enum in (WD_LINE_SPACING.EXACTLY, WD_LINE_SPACING.AT_LEAST):
+                pf.line_spacing = Pt(float(ls_val))
+            else:
+                pf.line_spacing = float(ls_val)
         if 'space_before' in format_spec and format_spec['space_before'] is not None:
             pf.space_before = Pt(float(format_spec['space_before']))
         if 'space_after' in format_spec and format_spec['space_after'] is not None:
@@ -134,6 +168,11 @@ class DocxCreator:
             pf.first_line_indent = Emu(
                 int(format_spec['first_line_indent'] * 12700)
             )
+
+        # ── Math font for equations ──
+        if 'math_font' in format_spec and format_spec['math_font'] is not None:
+            self._math_font = format_spec['math_font']
+            self.markdown_processor.math_font = format_spec['math_font']
 
     def add_markdown(self, md_text: str):
         """Parse markdown text and append its content to the document.
@@ -275,6 +314,10 @@ class DocxCreator:
 
         Args:
             path: Output .docx path
+
+        Note:
+            Math equations (``$...$`` / ``$$...$$``) are injected as OMML
+            during the build phase — professional display, native editable.
         """
         os.makedirs(os.path.dirname(os.path.abspath(path)) or '.', exist_ok=True)
         self.document.save(path)

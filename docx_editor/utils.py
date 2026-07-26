@@ -11,6 +11,7 @@ NSMAP = {
     'pic': 'http://schemas.openxmlformats.org/drawingml/2006/picture',
     'mc': 'http://schemas.openxmlformats.org/markup-compatibility/2006',
     'rPr': 'http://schemas.openxmlformats.org/officeDocument/2006/relationships',
+    'm': 'http://schemas.openxmlformats.org/officeDocument/2006/math',
 }
 
 
@@ -108,4 +109,9 @@ class MarkdownParseError(DocxError):
 
 class TableBuildError(DocxError):
     """Raised when table building with merges fails."""
+    pass
+
+
+class EquationError(DocxError):
+    """Raised when equation/formula operations fail."""
     pass
